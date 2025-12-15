@@ -81,7 +81,7 @@ many different aspects of the map generation process, such as:
 - which color scheme to use (light or dark)
 - ... plus *many* other options
 
-> **TODO** add generator config documentation describing all different options
+[Map Generation Customization](/docs/map-gen-customization.md) - a primer on the settings for map generation.
 
 By default, the script comes with several example generator configurations, but you can easily modify them or define
 a new one yourself. All you need is a valid ``.config.yaml`` file in the config subfolder that contains all necessary fields,
