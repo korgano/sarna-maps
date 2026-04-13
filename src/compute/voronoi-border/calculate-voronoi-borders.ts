@@ -217,7 +217,15 @@ function performVoronoiCalculations(
       affiliation: system.eraAffiliations[era.index],
       //affiliation: extractBorderStateAffiliation(system.eraAffiliations[era.index], undefined, 'ignore', 2),
     })).filter((system) => !IRRELEVANT_AFFILIATIONS.includes(
-      extractBorderStateAffiliation(system.affiliation)
+      extractBorderStateAffiliation(
+  system.affiliation,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  system.id,
+  era.index
+)
     )),
     ...salientPoints,
     {id: 'sol-buffer-point-1', x: 1, y: 3, affiliation: solAffiliation},

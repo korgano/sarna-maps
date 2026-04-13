@@ -1,141 +1,95 @@
 import path from 'path';
 import fs from 'fs';
 import yargsParser from 'yargs-parser';
-
 import {
   Era,
   Faction,
   System,
   DataSourceConfig,
-  GeneratorConfig,
-  logger,
-  LOGGER_LEVELS,
-  logSettings,
-  GlyphConfig,
-  SystemLabelConfig,
-  BorderLabelConfig,
+  logger, LOGGER_LEVELS, logSettings,
 } from './common';
-
-import type {
-  LocalFileConfig,
-} from './common/types/interfaces';
-
-import type {
-  MergeLocalFileConfig,
-} from './common/types/config-utils';
-
-import {
-  mergeLocalFileConfig,
-} from './common/utils/config-merge';
-
-import {
-  readConfigFiles, readFromGoogleSheet, readFromXlsxFile,
-} from './read';
-
-import {writeSvgMaps,} from './render/svg/write-svg-maps';
+import { readConfigFiles, readFromGoogleSheet, readFromXlsxFile } from './read';
+import { writeSvgMaps } from './render/svg/write-svg-maps';
 
 logSettings.level = LOGGER_LEVELS.All;
 logger.info(`Sarna map generation script v${process.env.npm_package_version}\n`);
 
 const argv = yargsParser(process.argv.slice(2));
 
-async function readConfigs(): Promise<{
-  generatorConfig: GeneratorConfig;
-  dataSourceConfig: DataSourceConfig;
-  glyphConfig: GlyphConfig;
-  systemLabelConfig: SystemLabelConfig;
-  borderLabelConfig: BorderLabelConfig;
-}> {
+async function readConfigs() {
   logger.info('Now reading and parsing config files ...');
-
+  // read config files
   const configDirectory = path.join(process.cwd(), 'config');
 
   if (!argv._?.length) {
-    logger.error(
-      'No config filename provided. Please provide it as this script\'s first parameter.',
-    );
+    logger.error('No config filename provided. Please provide it as this script\'s first parameter.');
     process.exit(1);
   }
 
   let generatorConfigPath = String(argv._[0]);
-
   if (!fs.existsSync(generatorConfigPath)) {
     generatorConfigPath = path.join(configDirectory, generatorConfigPath);
-
     if (!fs.existsSync(generatorConfigPath)) {
       generatorConfigPath += '.config.yaml';
     }
-
     if (!fs.existsSync(generatorConfigPath)) {
       logger.error(`Config file does not exist at "${argv._[0]}"`);
       process.exit(1);
     } else {
-      logger.info(
-        `Config filename "${argv._[0]}" was interpreted as "${generatorConfigPath}"`,
-      );
+      logger.info(`Config filename "${argv._[0]}" was interpreted as "${generatorConfigPath}"`);
     }
   }
 
   const configs = await readConfigFiles({
     generatorConfig: generatorConfigPath,
-    dataSourceConfig: path.join(
-      configDirectory,
-      'global',
-      'data-source.config.yaml',
-    ),
-    glyphConfig: path.join(
-      configDirectory,
-      'global',
-      'glyph.config.yaml',
-    ),
-    systemLabelConfig: path.join(
-      configDirectory,
-      'global',
-      'system-label.config.yaml',
-    ),
-    borderLabelConfig: path.join(
-      configDirectory,
-      'global',
-      'border-label.config.yaml',
-    ),
+    dataSourceConfig: path.join(configDirectory, 'global', 'data-source.config.yaml'),
+    glyphConfig: path.join(configDirectory, 'global', 'glyph.config.yaml'),
+    systemLabelConfig: path.join(configDirectory, 'global', 'system-label.config.yaml'),
+    borderLabelConfig: path.join(configDirectory, 'global', 'border-label.config.yaml'),
   });
 
-  // 🔒 Safe, explicit merge of localFileConfig
-  const mergedLocalFileConfig = mergeLocalFileConfig(
-    configs.dataSourceConfig,
-    configs.generatorConfig,
-  );
-
-  if (mergedLocalFileConfig) {
-    configs.dataSourceConfig.localFileConfig = mergedLocalFileConfig;
-
-    logger.info(
-      `Using localFileConfig: ` +
-      `dir=${mergedLocalFileConfig.directory}, ` +
-      `file=${mergedLocalFileConfig.filename}`,
-    );
-  }
-
-  logger.info('Config files read');
+  logger.info('config files read');
 
   return configs;
 }
 
+// src/main.ts
+
 async function readData(dataSourceConfig: DataSourceConfig) {
-  let sheetData: { eras: Array<Era>; systems: Array<System>; factions: Array<Faction> };
   if (dataSourceConfig.useSource === 'google') {
-    logger.info(`Attempting to read Google sheet with ID "${dataSourceConfig.googleSheetsConfig?.spreadsheetId}"`);
-    sheetData = await readFromGoogleSheet(dataSourceConfig);
-  } else {
-    const xlsxPath = path.join(
-      process.cwd(),
-      dataSourceConfig.localFileConfig?.directory || '',
-      dataSourceConfig.localFileConfig?.filename || '',
-    );
-    logger.info(`Attempting to read XLSX at ${xlsxPath}`);
-    sheetData = readFromXlsxFile(xlsxPath, dataSourceConfig);
+    return await readFromGoogleSheet(dataSourceConfig);
   }
-  return sheetData;
+
+  if (!dataSourceConfig.localFileConfig) {
+    throw new Error('localFileConfig is required when useSource is set to "local"');
+  }
+
+  const { directory, filename } = dataSourceConfig.localFileConfig;
+
+  // --- NEW: Enforce project-relative paths only ---
+
+  // Reject absolute paths
+  if (path.isAbsolute(directory)) {
+    throw new Error(`Absolute paths are not allowed in localFileConfig.directory: ${directory}`);
+  }
+
+  // Resolve path relative to project root
+  const projectRoot = process.cwd();
+  const resolvedPath = path.resolve(projectRoot, directory, filename);
+
+  // Ensure resolved path is still inside project root (prevents ../ traversal)
+  if (path.relative(projectRoot, resolvedPath).startsWith('..')) {
+  throw new Error(`Invalid directory path (escapes project root): ${directory}`);
+  }
+
+  // Validate file exists
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`Local XLSX file not found at path: ${resolvedPath}`);
+  }
+
+  logger.info(`Reading local XLSX file from: ${resolvedPath}`);
+
+  return readFromXlsxFile(resolvedPath, dataSourceConfig);
 }
 
 async function run() {

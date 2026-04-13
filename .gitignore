@@ -11,3 +11,13 @@ node_modules
 
 # IDE files
 .idea
+src/read/xlsx-reader - Copy.ts
+src/read/common/parse-factions - Copy.ts
+src/read/common/parse-single-system - Copy.ts
+src/render/svg/functions/render-systems - Copy.ts
+src/render/svg/functions/render-border-loops - Copy.ts
+src/compute/border-labeler/place-border-labels - Copy.ts
+src/render/svg/functions/render-faction-labels - Copy.ts
+src/compute/poi-area-labeler/place-label-for-faction - Copy.ts
+src/render/svg/functions/generate-disputed-system-fill-pattern - Copy.ts
+src/compute/border-labeler/functions/parse-manual-candidates-for-faction - Copy.ts
