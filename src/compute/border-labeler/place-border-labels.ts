@@ -8,6 +8,7 @@ import {
   Rectangle2d,
   RectangleGrid,
 } from '../../common';
+import { FactionAffiliationPair } from '../../read/common/retain-faction-affiliation-pairing';
 
 import { traceFaction } from '../../common/utils/faction-traversal-logger';
 
@@ -22,6 +23,7 @@ import {
 
 import { EMPTY_FACTION, INDEPENDENT } from '../constants';
 import { BorderLabelCandidate, BorderLabelsResult } from './types';
+import { resolveFactionRenderStyle } from '../../render/svg/types/faction-render-style';
 
 const FILE_NAME = 'place-border-labels.ts';
 
@@ -29,6 +31,7 @@ export function placeBorderLabels(
   viewBox: Rectangle2d,
   eraIndex: number,
   factionMap: Record<string, Faction>,
+  pairs: Map<string, FactionAffiliationPair>,
   borderEdgeLoops: Record<string, Array<BorderEdgeLoop>>,
   grid: RectangleGrid,
   glyphConfig: GlyphConfig,
@@ -64,19 +67,26 @@ export function placeBorderLabels(
       return;
     }
 
-    let faction = factionMap[factionKey];
+    // --- Resolve faction using pairing data (preferred) with factionMap fallback ---
+    const style = resolveFactionRenderStyle({
+      factionKey,
+      factionMap,
+      pairs,
+    });
+
+    let faction = style.faction;
 
     // --- Missing faction handling ---
     if (!faction) {
-      logger.warn(`Cannot generate borders for faction key ${factionKey} - no such faction is defined`);
+      logger.warn('place-border-labels.ts', `Cannot generate borders for faction key ${factionKey} - no such faction is defined`);
       logger.debug(`${borderEdgeLoops[factionKey].length} border loops`);
 
-      traceFaction(FILE_NAME, 'MISSING FACTION', factionKey);
+      traceFaction(FILE_NAME, 'MISSING FACTION', `Cannot generate borders for faction key ${factionKey} - no such faction is defined`);
 
       faction = {
         id: factionKey,
         name: 'Unknown Faction',
-        color: '#000',
+        color: style.color || '#999999',
       };
 
       traceFaction(

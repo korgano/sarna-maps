@@ -1,12 +1,14 @@
 import { Faction, logger, Point2d, pointOnUnitCircleByPercentValue } from '../../../common';
 import { traceFaction } from '../../../common/utils/faction-traversal-logger';
+import { FactionRenderStyle } from '../types/faction-render-style';
 
 const FILE_NAME = 'generate-disputed-system-fill-pattern.ts';
 
 export function generateDisputedSystemFillPattern(
   factionKey: string,
   factions: Record<string, Faction>,
-  prefix = ''
+  prefix = '',
+  style?: FactionRenderStyle,
 ) {
   traceFaction(FILE_NAME, 'INPUT factionKey', factionKey);
 
@@ -16,6 +18,7 @@ export function generateDisputedSystemFillPattern(
 
   if (factionKeys.length < 2) {
     logger.warn(
+      'generate-disputed-system-fill-pattern.ts',
       `Cannot create disputed system fill pattern: Need at least two factions in key "${factionKey}"`
     );
     traceFaction(FILE_NAME, 'INVALID factionKeys LENGTH', factionKey);
@@ -42,9 +45,19 @@ export function generateDisputedSystemFillPattern(
 
     traceFaction(FILE_NAME, `ITERATION ${i}`, `key="${key}"`);
 
-    if (!faction) {
+    // Use style's disputedFactionIds if available, otherwise fall back to faction lookup
+    let color = '#000';
+    if (style?.disputedFactionIds?.length) {
+      const disputedFaction = factions[style.disputedFactionIds[i]] || faction;
+      color = disputedFaction?.color || '#000';
+    } else if (faction) {
+      color = faction.color || '#000';
+    }
+
+    if (!faction && !style?.disputedFactionIds?.length) {
       // 🔴 ROOT CAUSE FIX: prevent crash + log missing mapping
       logger.error(
+        'generate-disputed-system-fill-pattern.ts',
         `Missing faction definition for key "${key}" in disputed pattern "${factionKey}"`
       );
 
@@ -73,7 +86,7 @@ export function generateDisputedSystemFillPattern(
     traceFaction(
       FILE_NAME,
       'FACTION RESOLVED',
-      `key="${key}" color="${faction.color}"`
+      `key="${key}" color="${color}"`
     );
 
     startPoint = pointOnUnitCircleByPercentValue(currentPercentage);
@@ -85,7 +98,7 @@ export function generateDisputedSystemFillPattern(
         `M${startPoint.x},${startPoint.y} ` +
         `A1,1,0,0,1,${endPoint.x},${endPoint.y} ` +
         `L0,0" ` +
-        `style="fill:${faction.color || '#000'}; stroke-width: 0;" />`
+        `style="fill:${color}; stroke-width: 0;" />`
     );
   }
 

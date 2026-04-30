@@ -9,6 +9,7 @@ import {
   System,
   SystemLabelConfig, TextTemplate
 } from '../../../common';
+import { FactionAffiliationPair } from '../../../read/common/retain-faction-affiliation-pairing';
 import { restrictSystemsToViewbox } from '../../../compute/restrict-objects-to-viewbox';
 import {
   BorderEdgeLoop,
@@ -40,8 +41,8 @@ import { renderRegionalBorders } from './render-regional-borders';
  * @param globalConfigs The global configuration objects
  * @param era The selected era for this image
  * @param factionMap The map of factions (factionId -> faction object)
+ * @param pairs The faction affiliation pairs map for render pipeline
  * @param affiliationLevelSections The border information in an array (by hierarchy level)
- // * @param borderLoops Array with hierarchy levels of maps (by faction / affiliation key) of all border loops
  * @param systems The list of all systems
  * @param focusedSystem The focused system for this map section, if any
  * @param debugObjects Objects used for virtual debugging
@@ -57,8 +58,8 @@ export function renderMapLayer(
   },
   era: Era,
   factionMap: Record<string, Faction>,
+  pairs: Map<string, FactionAffiliationPair>,
   affiliationLevelSections: Array<VoronoiResultHierarchyLevel>,
-  // borderLoops: Array<Record<string, Array<BorderEdgeLoop>>>,
   systems: Array<System>,
   focusedSystem?: System,
   debugObjects?: Partial<VoronoiResult>,
@@ -145,6 +146,7 @@ export function renderMapLayer(
         visibleViewRect,
         era.index,
         factionMap,
+        pairs,
         affiliationLevelSections.length ? affiliationLevelSections[0].borderLoops || {} : {},
         labelGrid,
         globalConfigs.glyphConfig,
@@ -162,12 +164,13 @@ export function renderMapLayer(
   mapLayerConfig.elements.borders?.forEach((bordersConfig, levelIndex) => {
     if (bordersConfig.display === 'factions') {
       if (boundedBorderLoops.length < levelIndex + 1) {
-        logger.warn(`Cannot generate output for map layer "${mapLayerConfig.name}": No bounded border loops for level ${levelIndex}`);
+        logger.warn('render-map-layer.ts', `Cannot generate output for map layer "${mapLayerConfig.name}": No bounded border loops for level ${levelIndex}`);
         return;
       }
       const { defs, css, markup } = renderBorderLoops(
         boundedBorderLoops[levelIndex],
-        factionMap, // controls fill colors
+        factionMap,
+        pairs,
         theme,
         bordersConfig.curveBorderEdges,
         layerCssClass
@@ -181,6 +184,7 @@ export function renderMapLayer(
         levelIndex,
         boundedInternalBorders[levelIndex],
         factionMap,
+        pairs,
         theme,
         bordersConfig.curveBorderEdges,
       );
@@ -196,7 +200,7 @@ export function renderMapLayer(
   // TODO enable for lower hierarchy levels
   const { defs: borderLabelDefs, css: borderLabelCss, markup: borderLabelMarkup } =
     mapLayerConfig.elements.borders?.length && mapLayerConfig.elements.borders[0].borderLabels
-      ? renderBorderLabels(borderLabels, factionMap, theme, layerCssClass, zoomFactor)
+      ? renderBorderLabels(borderLabels, factionMap, pairs, theme, layerCssClass, zoomFactor)
       : { defs: '', css: '', markup: '' };
 
   const { defs: jumpRingDefs, css: jumpRingCss, markup: jumpRingMarkup } = mapLayerConfig.elements.jumpRings
@@ -209,7 +213,7 @@ export function renderMapLayer(
       : { defs: '', css: '', markup: '' };
 
   const { defs: systemDefs, css: systemCss, markup: systemMarkup } = mapLayerConfig.elements.systems
-    ? renderSystems(visibleSystems, factionMap, theme, era.index, layerCssClass)
+    ? renderSystems(visibleSystems, factionMap, pairs, theme, era.index, layerCssClass)
     : { defs: '', css: '', markup: '' };
 
   const { css: systemLabelCss, markup: systemLabelMarkup } = mapLayerConfig.elements.systemLabels

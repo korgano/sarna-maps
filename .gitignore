@@ -21,3 +21,8 @@ src/render/svg/functions/render-faction-labels - Copy.ts
 src/compute/poi-area-labeler/place-label-for-faction - Copy.ts
 src/render/svg/functions/generate-disputed-system-fill-pattern - Copy.ts
 src/compute/border-labeler/functions/parse-manual-candidates-for-faction - Copy.ts
+
+#logging files
+faction-traversal-log-dragonfall-v1.txt
+faction-traversal-log.txt
+warning-error-log.txt

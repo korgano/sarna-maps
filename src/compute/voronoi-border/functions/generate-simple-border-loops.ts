@@ -66,6 +66,7 @@ function createFactionLoops(faction: string, sections: Array<BorderSection>, ver
     }
     if (iterations >= MAX_ITERATIONS - 1) {
       logger.warn(
+        'generate-simple-border-loops.ts',
         'Problem during the creation of simple faction loops: Iteration limit reached',
         faction,
         factionSections.length,

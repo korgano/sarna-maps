@@ -37,7 +37,7 @@ export function initializeLabelItems(
   const labelItems: Array<LabelRectangle> = [];
   systems.forEach((system) => {
     const systemName = system.eraNames[eraIndex];
-    const systemAffiliation = extractBorderStateAffiliation(system.eraAffiliations[eraIndex], [''], 'full');
+    const systemAffiliation = extractBorderStateAffiliation(system.eraAffiliations[eraIndex], [''], 'full', undefined, undefined, system.id, eraIndex);
     const additions = getLabelAdditions(system, systemAffiliation, eraIndex);
     const labelMargin = getLabelMargin(system, eraIndex, systemLabelConfig);
 

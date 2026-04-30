@@ -22,7 +22,7 @@ async function readConfigs() {
   const configDirectory = path.join(process.cwd(), 'config');
 
   if (!argv._?.length) {
-    logger.error('No config filename provided. Please provide it as this script\'s first parameter.');
+    logger.error('main.ts', 'No config filename provided. Please provide it as this script\'s first parameter.');
     process.exit(1);
   }
 
@@ -33,7 +33,7 @@ async function readConfigs() {
       generatorConfigPath += '.config.yaml';
     }
     if (!fs.existsSync(generatorConfigPath)) {
-      logger.error(`Config file does not exist at "${argv._[0]}"`);
+      logger.error('main.ts', `Config file does not exist at "${argv._[0]}"`);
       process.exit(1);
     } else {
       logger.info(`Config filename "${argv._[0]}" was interpreted as "${generatorConfigPath}"`);
@@ -103,6 +103,10 @@ async function run() {
   if (!generatorConfig.debugMode) {
     logSettings.level = LOGGER_LEVELS.NoLogsOrDebug;
   }
+
+  // Faction traversal logger configured via config/global/faction-traversal.config.yaml
+  // No programmatic overrides - YAML config is the only method
+
   const sheetData = await readData(dataSourceConfig);
   const factionMap: Record<string, Faction> = {};
   sheetData.factions.forEach((faction) => factionMap[faction.id] = faction);

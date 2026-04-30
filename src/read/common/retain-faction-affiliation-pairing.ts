@@ -1,4 +1,4 @@
-import { Faction, System, Era } from '../../common';
+import { Faction, System, Era, logger } from '../../common';
 import { traceFaction } from '../../common/utils/faction-traversal-logger';
 
 export interface FactionAffiliationPair {
@@ -21,6 +21,8 @@ const pairingCache: Map<string, FactionAffiliationPair> = new Map();
 
 /**
  * Normalize affiliation keys (centralized fix point)
+ * Converts to uppercase for case-insensitive matching
+ * Handles both comma and pipe separators to support v1 and v3 data formats
  */
 function normalizeAffiliationKey(raw: string, fileName: string, stage: string): string {
   if (!raw) {
@@ -28,30 +30,43 @@ function normalizeAffiliationKey(raw: string, fileName: string, stage: string): 
     return '';
   }
 
-  // Known normalization issue
-  const normalized = raw.replace(/CIZ[1-3][A-C]/, 'CIZ');
+  const withoutHidden = raw.replace(/\s*\(H\)\s*$/i, '').trim();
+  const input = withoutHidden || raw;
 
-  if (raw !== normalized) {
-    traceFaction(fileName, `${stage}:normalize:changed`, `${raw} -> ${normalized}`);
-  } else {
-    traceFaction(fileName, `${stage}:normalize:unchanged`, raw);
+  const firstDivider = /[,|]/.exec(input);
+  let beforeDivider = firstDivider ? input.substring(0, firstDivider.index).trim() : input.trim();
+
+  const regionMatch = beforeDivider.match(/^([A-Za-z]+)\|Region\s+\d+$/i);
+  if (regionMatch) {
+    beforeDivider = regionMatch[1];
+    traceFaction(fileName, `${stage}:normalize:v3-format-fix`, `raw -> ${beforeDivider}`);
   }
 
+  const pipeOnlyMatch = beforeDivider.match(/^([A-Za-z]+)\|.*$/i);
+  if (pipeOnlyMatch) {
+    beforeDivider = pipeOnlyMatch[1];
+    traceFaction(fileName, `${stage}:normalize:pipe-fix`, `pipe separator -> ${beforeDivider}`);
+  }
+
+  const normalized = beforeDivider.toUpperCase();
+  traceFaction(fileName, `${stage}:normalize:changed`, `${raw} -> ${normalized}`);
   return normalized;
 }
 
 /**
  * Build lookup: factionId → factions[]
+ * Uses case-insensitive key matching to handle variations like "Ciz" vs "CIZ"
  */
 function buildFactionLookup(factions: Faction[]): Map<string, Faction[]> {
   const map = new Map<string, Faction[]>();
 
   for (const faction of factions) {
-    if (!map.has(faction.id)) {
-      map.set(faction.id, []);
+    const normalizedKey = faction.id.toUpperCase();
+    if (!map.has(normalizedKey)) {
+      map.set(normalizedKey, []);
     }
 
-    map.get(faction.id)!.push(faction);
+    map.get(normalizedKey)!.push(faction);
   }
 
   return map;
@@ -73,29 +88,36 @@ function resolveFactionForEra(
     return { faction: null, status: 'missing-affiliation' };
   }
 
-  const candidates = factionLookup.get(affiliationKey);
+  const lookupKey = affiliationKey.toUpperCase();
+  const candidates = factionLookup.get(lookupKey);
 
   if (!candidates || candidates.length === 0) {
-    traceFaction(fileName, `${stage}:resolve:no-faction-match`, affiliationKey);
+    traceFaction(fileName, `${stage}:resolve:no-faction-match`, lookupKey);
     return { faction: null, status: 'no-faction-match' };
   }
 
-  const valid = candidates.filter(f =>
-    (f.founding === undefined || f.founding <= era.year) &&
-    (f.dissolution === undefined || f.dissolution >= era.year)
-  );
+  traceFaction(fileName, `${stage}:resolve:candidates-count`, `${candidates.length}`);
+
+  const valid = candidates.filter(f => {
+    const foundingOk = f.founding === undefined || f.founding <= era.year;
+    const dissolutionOk = f.dissolution === null || f.dissolution === undefined || f.dissolution >= era.year;
+    traceFaction(fileName, `${stage}:resolve:faction-valid`, `${f.id}:founding=${f.founding}:dissolution=${f.dissolution}:era=${era.year}:valid=${foundingOk && dissolutionOk}`);
+    return foundingOk && dissolutionOk;
+  });
+
+  traceFaction(fileName, `${stage}:resolve:valid-count`, `${valid.length}`);
 
   if (valid.length === 0) {
-    traceFaction(fileName, `${stage}:resolve:no-era-match`, affiliationKey);
+    traceFaction(fileName, `${stage}:resolve:no-era-match`, lookupKey);
     return { faction: null, status: 'no-era-match' };
   }
 
   if (valid.length > 1) {
-    traceFaction(fileName, `${stage}:resolve:multiple-matches`, affiliationKey);
+    traceFaction(fileName, `${stage}:resolve:multiple-matches`, lookupKey);
     return { faction: valid[0], status: 'multiple-matches' };
   }
 
-  traceFaction(fileName, `${stage}:resolve:success`, affiliationKey);
+  traceFaction(fileName, `${stage}:resolve:success`, lookupKey);
   return { faction: valid[0], status: 'success' };
 }
 
@@ -108,12 +130,24 @@ export function buildFactionAffiliationPairs(
   eras: Era[]
 ): Map<string, FactionAffiliationPair> {
 
+  pairingCache.clear();
+
   const fileName = 'retain-faction-affiliation-pairing.ts';
   const stage = 'build';
 
   const factionLookup = buildFactionLookup(factions);
 
-  traceFaction(fileName, `${stage}:init`, `systems=${systems.length}, factions=${factions.length}`);
+  traceFaction(fileName, `${stage}:init`, `systems=${systems.length}, factions=${factions.length}, uniqueKeys=${factionLookup.size}`);
+
+  const duplicateIds = factions.reduce((acc, f) => {
+    const upper = f.id.toUpperCase();
+    acc[upper] = (acc[upper] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const duplicates = Object.entries(duplicateIds).filter(([, count]) => count > 1);
+  if (duplicates.length > 0) {
+    logger.warn('retain-faction-affiliation-pairing.ts', `Duplicate faction IDs detected (case-insensitive): ${duplicates.map(([id]) => id).join(', ')}`);
+  }
 
   for (const system of systems) {
     for (const era of eras) {
@@ -124,7 +158,7 @@ export function buildFactionAffiliationPairs(
       traceFaction(
         fileName,
         `${stage}:input`,
-        `${system.id}:${era.year}:${rawAffiliation}`
+        `${system.name}(${system.id}):${era.year}:${rawAffiliation}`
       );
 
       const normalized = normalizeAffiliationKey(rawAffiliation, fileName, stage);
@@ -156,10 +190,31 @@ export function buildFactionAffiliationPairs(
       traceFaction(
         fileName,
         `${stage}:output`,
-        `${cacheKey}:${normalized}:${faction ? faction.id : 'NULL'}:${status}`
+        `${system.name}(${cacheKey}):${normalized}:${faction ? faction.id : 'NULL'}:${status}`
       );
     }
   }
+
+  const statusToKey: Record<FactionAffiliationPair['resolutionStatus'], keyof typeof stats> = {
+    'success': 'success',
+    'missing-affiliation': 'missingAffiliation',
+    'no-faction-match': 'noFactionMatch',
+    'no-era-match': 'noEraMatch',
+    'multiple-matches': 'multipleMatches'
+  };
+  const stats = {
+    total: systems.length * eras.length,
+    success: 0,
+    missingAffiliation: 0,
+    noFactionMatch: 0,
+    noEraMatch: 0,
+    multipleMatches: 0
+  };
+  for (const pair of pairingCache.values()) {
+    stats[statusToKey[pair.resolutionStatus]]++;
+  }
+  logger.info('retain-faction-affiliation-pairing.ts', `Pairing build complete: ${JSON.stringify(stats)}`);
+  traceFaction(fileName, `${stage}:summary`, JSON.stringify(stats));
 
   return pairingCache;
 }

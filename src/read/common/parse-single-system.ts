@@ -24,7 +24,7 @@ interface SystemRename {
 export function parseSingleSystem(id: string, row: SystemRow, eras: Array<Era>): System {
 
   traceFaction(FILE_NAME, 'INPUT SYSTEM ID', id);
-  traceFaction(FILE_NAME, 'RAW eraAffiliations', JSON.stringify(row.eraAffiliations));
+  //traceFaction(FILE_NAME, 'RAW eraAffiliations', JSON.stringify(row.eraAffiliations));
 
   // Ensure that scale and rotation values exist
   if (!row.size || (row.size as Array<number>).length === 0) {
@@ -120,13 +120,13 @@ export function parseSingleSystem(id: string, row: SystemRow, eras: Array<Era>):
       eraNames[eraNames.length - 1]
     );
   });
-
+/**
   traceFaction(
     FILE_NAME,
     'FINAL eraAffiliations',
     JSON.stringify(eraAffiliations)
   );
-
+*/
   return {
     id,
     name: row.name,

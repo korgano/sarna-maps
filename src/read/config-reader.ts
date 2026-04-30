@@ -37,13 +37,14 @@ export async function readConfigFiles(fileNames: {
     // TODO check filename pattern for output
   } catch (e) {
     logger.error(
+      'config-reader.ts',
       `The generator config at ${fileNames.generatorConfig} is not valid:\n` +
         e.message.replaceAll('value.', '').split('\n').map((line: string) => '  ' + line).join('\n'),
     );
     if (e.message.split('\n').length >= 3) {
-      logger.error('  ... (first three errors shown)');
+      logger.error('config-reader.ts', '  ... (first three errors shown)');
     }
-    logger.error('Please refer to the example configs and the generator config documentation.');
+    logger.error('config-reader.ts', 'Please refer to the example configs and the generator config documentation.');
     process.exit(1);
   }
   logger.info(`Generator config at ${fileNames.generatorConfig} read and parsed successfully`);

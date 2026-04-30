@@ -5,15 +5,18 @@ import {
   System,
   TextTemplate,
 } from '../../../common';
+import { FactionAffiliationPair } from '../../../read/common/retain-faction-affiliation-pairing';
 import path from 'path';
 import { generateDisputedSystemFillPattern } from './generate-disputed-system-fill-pattern';
 import { traceFaction } from '../../../common/utils/faction-traversal-logger';
+import { resolveFactionRenderStyle, FactionRenderStyle } from '../types/faction-render-style';
 
 /**
  * Generates the markup to render out system dots.
  *
  * @param systems The systems list
  * @param factions The list of factions
+ * @param pairs The faction affiliation pairs map for render pipeline
  * @param theme The render color theme
  * @param eraIndex Index of the era to use
  * @param prefix The prefix string for css and defs
@@ -23,6 +26,7 @@ import { traceFaction } from '../../../common/utils/faction-traversal-logger';
 export function renderSystems(
   systems: System[],
   factions: Record<string, Faction>,
+  pairs: Map<string, FactionAffiliationPair>,
   theme: 'light' | 'dark',
   eraIndex = 0,
   prefix = '',
@@ -36,6 +40,7 @@ export function renderSystems(
   const clusterTemplate = new TextTemplate('cluster-ellipse.svg.tpl', templatePath);
 
   const visibleFactions: Record<string, Faction> = {};
+  const factionStyles: Record<string, FactionRenderStyle> = {};
 
   let markup = '';
   let defs = '';
@@ -50,28 +55,49 @@ export function renderSystems(
     // ---- TRACE: raw affiliation ----
     traceFaction('/src/render/svg/functions/render-systems.ts', 'INPUT raw-affiliation', String(eraAffiliation));
 
-    const displayedFaction = extractBorderStateAffiliation(
+    let displayedFaction = extractBorderStateAffiliation(
       eraAffiliation,
-      [''],
-      'faction'
+      ['', 'U'], // Keep default ignored affiliations
+      'faction',
+      undefined,
+      undefined,
+      system.id,
+      eraIndex
     );
 
     // ---- TRACE: extracted faction ----
     traceFaction('/src/render/svg/functions/render-systems.ts', 'INPUT extracted-faction', String(displayedFaction));
 
-    const faction = factions[displayedFaction];
+    // Resolve faction render style using pairs data (preferred) with factionMap fallback
+    const style = resolveFactionRenderStyle({
+      systemId: system.id,
+      eraIndex,
+      factionKey: displayedFaction,
+      factionMap: factions,
+      pairs,
+    });
+
+    // Sync displayedFaction with the resolved style to avoid divergence
+    // (pair lookup may return a different normalized affiliation)
+    displayedFaction = style.factionKey;
 
     // ---- TRACE: faction resolution ----
-    traceFaction('/src/render/svg/functions/render-systems.ts', 'INPUT faction-lookup', String(!!faction));
+    traceFaction('/src/render/svg/functions/render-systems.ts', 'INPUT faction-lookup', String(!!style.faction));
 
     const systemIsHidden = !!eraAffiliation.match(/^[^(]+\(H\)(,.+)?$/);
+    const systemIsAbandoned = !!eraAffiliation.match(/^A/);
 
     if (displayedFaction === '') {
       logger.debug('empty faction string for', system.name);
     }
 
-    if (!visibleFactions[displayedFaction]) {
-      visibleFactions[displayedFaction] = faction;
+    if (!visibleFactions[displayedFaction] && style.faction) {
+      visibleFactions[displayedFaction] = style.faction;
+    }
+
+    // Store style for CSS generation (use first system's style per factionKey)
+    if (!factionStyles[displayedFaction]) {
+      factionStyles[displayedFaction] = style;
     }
 
     if (!system.isCluster) {
@@ -98,7 +124,7 @@ export function renderSystems(
         y: (-system.y).toFixed(3),
         radius: systemRadius,
         name: eraName,
-        css_class: displayedFaction + (systemIsHidden ? ' hidden' : ''),
+        css_class: displayedFaction + (systemIsHidden ? ' hidden' : '') + (systemIsAbandoned ? ' abandoned' : ''),
       });
 
       if (eraCapitalLevel > 0) {
@@ -116,7 +142,7 @@ export function renderSystems(
         rx: system.radiusX,
         ry: system.radiusY,
         name: eraName,
-        css_class: displayedFaction,
+        css_class: displayedFaction + (systemIsAbandoned ? ' abandoned' : ''),
       });
     }
   });
@@ -125,23 +151,28 @@ export function renderSystems(
 
   Object.keys(visibleFactions).forEach((factionKey) => {
     const faction = visibleFactions[factionKey];
+    const style = factionStyles[factionKey];
 
     // ---- TRACE: CSS generation ----
-    traceFaction('/src/render/svg/functions/render-systems.ts', 'css-generation', String(faction?.color));
+    traceFaction('/src/render/svg/functions/render-systems.ts', 'css-generation', String(style?.color));
 
     if (factionKey === 'U' || factionKey === 'A') {
       return;
     } else if (factionKey === 'D') {
       // handled in default template
     } else if (factionKey.startsWith('D-')) {
-      defs += generateDisputedSystemFillPattern(factionKey, factions, defPrefix);
+      defs += generateDisputedSystemFillPattern(factionKey, factions, defPrefix, style);
       factionCss += `${cssPrefix}g.systems .system.${factionKey}, g.systems .cluster.${factionKey} { fill: url(#${defPrefix}system-fill-${factionKey}) }\n`;
+    } else if (!faction && style?.resolutionStatus === 'no-faction-match') {
+      // Use default gray color for missing factions (resolved via pairing data)
+      factionCss += `${cssPrefix}g.systems .system.${factionKey}, g.systems .cluster.${factionKey} { fill: ${style.color} }\n`;
     } else if (!faction) {
       logger.warn(
+        'render-systems.ts',
         `Cannot find faction for affiliation key "${factionKey}". Systems will be displayed in the default color.`
       );
     } else {
-      factionCss += `${cssPrefix}g.systems .system.${factionKey}, g.systems .cluster.${factionKey} { fill: ${faction.color || '#000'} }\n`;
+      factionCss += `${cssPrefix}g.systems .system.${factionKey}, g.systems .cluster.${factionKey} { fill: ${faction.color || style?.color || '#999999'} }\n`;
     }
   });
 

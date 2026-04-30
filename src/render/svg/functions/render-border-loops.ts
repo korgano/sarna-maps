@@ -2,9 +2,11 @@ import path from 'path';
 
 import { BorderEdgeLoop } from '../../../compute';
 import { Faction, TextTemplate } from '../../../common';
+import { FactionAffiliationPair } from '../../../read/common/retain-faction-affiliation-pairing';
 import { EMPTY_FACTION, INDEPENDENT } from '../../../compute/constants';
 import { generateSectionPath } from './generate-section-path';
 import { traceFaction } from '../../../common/utils/faction-traversal-logger';
+import { resolveFactionRenderStyle, FactionRenderStyle } from '../types/faction-render-style';
 
 /**
  * Generates the markup and css to render out borders.
@@ -12,6 +14,7 @@ import { traceFaction } from '../../../common/utils/faction-traversal-logger';
 export function renderBorderLoops(
   borderLoops: Record<string, Array<BorderEdgeLoop>>,
   factions: Record<string, Faction>,
+  pairs: Map<string, FactionAffiliationPair>,
   theme: 'light' | 'dark',
   renderCurves = true,
   prefix = '',
@@ -34,10 +37,14 @@ export function renderBorderLoops(
       return;
     }
 
-    // --- SAFE FACTION LOOKUP ---
-    const faction = factions[factionKey];
+    // --- RESOLVE FACTION RENDER STYLE ---
+    const style = resolveFactionRenderStyle({
+      factionKey,
+      factionMap: factions,
+      pairs,
+    });
 
-    if (!faction) {
+    if (!style.faction && style.resolutionStatus === 'no-faction-match') {
       traceFaction(
         'src/render/svg/functions/render-border-loops.ts',
         'missing-faction',
@@ -49,14 +56,14 @@ export function renderBorderLoops(
       const factionKeys = factionKey.replace(/^D-/g, '').split('-');
 
       if (factionKeys.length === 2) {
-        const faction1 = factions[factionKeys[0]];
-        const faction2 = factions[factionKeys[1]];
+        const faction1 = factions[factionKeys[0]] || (style.disputedFactionIds[0] ? { color: style.color } : null);
+        const faction2 = factions[factionKeys[1]] || (style.disputedFactionIds[1] ? { color: style.color } : null);
 
         defs += defTemplate.replace({
           prefix: defPrefix,
           id: factionKey,
-          color1: faction1?.color || '#c86464',
-          color2: faction2?.color || '#c86464',
+          color1: faction1?.color || style.disputedFactionIds[0] ? '#999999' : '#c86464',
+          color2: faction2?.color || style.disputedFactionIds[1] ? '#999999' : '#c86464',
         });
 
         // Trace missing sub-factions
@@ -75,31 +82,41 @@ export function renderBorderLoops(
           );
         }
 
+        // Add CSS for the disputed pattern
+        css += cssTemplate.replace({
+          prefix: cssPrefix,
+          id: factionKey,
+          strokeColor: 'transparent',
+          strokeWidth: '0',
+          fill: `url(#${defPrefix}border-fill-${factionKey})`,
+        });
+
       } else {
-        factionKey = 'D';
+        // FALLBACK: use generic 'D' pattern without reassigning factionKey
         defs += defTemplate.replace({
           prefix: defPrefix,
-          id: factionKey,
+          id: 'D',
           color1: '#c86464',
           color2: 'transparent',
         });
-      }
 
-      css += cssTemplate.replace({
-        prefix: cssPrefix,
-        id: factionKey,
-        strokeColor: 'transparent',
-        strokeWidth: '0',
-        fill: `url(#${defPrefix}border-fill-${factionKey})`,
-      });
+        // Use 'D' as the pattern reference for CSS when falling back
+        css += cssTemplate.replace({
+          prefix: cssPrefix,
+          id: factionKey,
+          strokeColor: 'transparent',
+          strokeWidth: '0',
+          fill: `url(#${defPrefix}border-fill-D)`,
+        });
+      }
 
     } else {
       css += cssTemplate.replace({
         prefix: cssPrefix,
         id: factionKey,
-        strokeColor: faction?.color || '#000',
+        strokeColor: style.color || '#000',
         strokeWidth: '1px',
-        fill: faction?.color || '#000',
+        fill: style.color || '#000',
       });
     }
 
