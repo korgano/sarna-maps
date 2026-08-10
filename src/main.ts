@@ -8,7 +8,7 @@ import {
   DataSourceConfig,
   logger, LOGGER_LEVELS, logSettings,
 } from './common';
-import { readConfigFiles, readFromGoogleSheet, readFromXlsxFile } from './read';
+import { readConfigFiles, readFromGoogleSheet, readFromCsvFiles } from './read';
 import { writeSvgMaps } from './render/svg/write-svg-maps';
 
 logSettings.level = LOGGER_LEVELS.All;
@@ -64,9 +64,7 @@ async function readData(dataSourceConfig: DataSourceConfig) {
     throw new Error('localFileConfig is required when useSource is set to "local"');
   }
 
-  const { directory, filename } = dataSourceConfig.localFileConfig;
-
-  // --- NEW: Enforce project-relative paths only ---
+  const { directory, systemsFilename, factionsFilename, descriptionFilename } = dataSourceConfig.localFileConfig;
 
   // Reject absolute paths
   if (path.isAbsolute(directory)) {
@@ -75,21 +73,26 @@ async function readData(dataSourceConfig: DataSourceConfig) {
 
   // Resolve path relative to project root
   const projectRoot = process.cwd();
-  const resolvedPath = path.resolve(projectRoot, directory, filename);
+  const resolvedDir = path.resolve(projectRoot, directory);
 
   // Ensure resolved path is still inside project root (prevents ../ traversal)
-  if (path.relative(projectRoot, resolvedPath).startsWith('..')) {
-  throw new Error(`Invalid directory path (escapes project root): ${directory}`);
+  if (path.relative(projectRoot, resolvedDir).startsWith('..')) {
+    throw new Error(`Invalid directory path (escapes project root): ${directory}`);
   }
+
+  const systemsPath = path.join(resolvedDir, systemsFilename);
 
   // Validate file exists
-  if (!fs.existsSync(resolvedPath)) {
-    throw new Error(`Local XLSX file not found at path: ${resolvedPath}`);
+  if (!fs.existsSync(systemsPath)) {
+    throw new Error(`Systems CSV file not found at path: ${systemsPath}`);
   }
 
-  logger.info(`Reading local XLSX file from: ${resolvedPath}`);
+  const factionsPath = factionsFilename ? path.join(resolvedDir, factionsFilename) : undefined;
+  const descriptionPath = descriptionFilename ? path.join(resolvedDir, descriptionFilename) : undefined;
 
-  return readFromXlsxFile(resolvedPath, dataSourceConfig);
+  logger.info(`Reading local CSV files from: ${resolvedDir}`);
+
+  return readFromCsvFiles(systemsPath, factionsPath, descriptionPath, dataSourceConfig);
 }
 
 async function run() {
@@ -109,7 +112,7 @@ async function run() {
 
   const sheetData = await readData(dataSourceConfig);
   const factionMap: Record<string, Faction> = {};
-  sheetData.factions.forEach((faction) => factionMap[faction.id] = faction);
+  sheetData.factions.forEach((faction: Faction) => factionMap[faction.id] = faction);
 
   await writeSvgMaps(
     generatorConfig,
