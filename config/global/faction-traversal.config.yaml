@@ -13,7 +13,8 @@ logFrequency: 'all'
 # Pattern to match faction values (regex string)
 # Leave empty to log ALL faction values (recommended for debugging)
 # Set to 'FWL' or other pattern to filter specific factions
-pattern: ''
+# Set to 'D-' to log only disputed system faction traces
+pattern: 'D-'
 
 # List of files to exclude from tracing
 # Use the file identifier as used in traceFaction() calls (e.g., 'parse-factions.ts')

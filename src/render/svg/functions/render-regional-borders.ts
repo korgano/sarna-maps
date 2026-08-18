@@ -30,9 +30,16 @@ export function renderRegionalBorders(
   const cssTemplate = new TextTemplate('regional-border-section.css.tpl', templatePath);
   const factionCssTemplate = new TextTemplate('regional-border-section-faction.css.tpl', templatePath);
   let borderSectionsMarkup = '';
+  const strokeWidth = Math.max(1 - (level - 1) * 0.25, 0.25);
+  const strokeStyle = level === 1
+    ? 'stroke-dasharray: none'
+    : level === 2
+      ? 'stroke-dasharray: 3 1.5'
+      : 'stroke-dasharray: 1 2';
   let css = cssTemplate.replace({
     level,
-    strokeWidth: 1 / level,
+    strokeWidth,
+    strokeStyle,
   });
   borderSections.forEach((borderSection) => {
     const factionKey = borderSection.affiliation1.split(',').shift() || EMPTY_FACTION;

@@ -38,6 +38,7 @@ export function renderSingleMapImage(
   systems: Array<System>,
   focusedSystem?: System,
   debugObjects?: Partial<VoronoiResult>,
+  enabledEras?: number[],
 ) {
   const theme = generatorConfig.theme || 'light';
   const templatePath = path.join(__dirname, '../templates/', theme);
@@ -46,7 +47,7 @@ export function renderSingleMapImage(
   // generate code for all map sections and all overlays
   const elements: Array<{ defs: string; css: string; markup: string; }> = [];
   elements.push(
-    ...(generatorConfig.mapLayers || []).map((mapLayerConfig) =>
+...(generatorConfig.mapLayers || []).map((mapLayerConfig) =>
       renderMapLayer(
         theme,
         generatorConfig.dimensions,
@@ -58,7 +59,8 @@ export function renderSingleMapImage(
         affiliationLevelSections,
         systems,
         focusedSystem,
-       !!generatorConfig.debugMode ? debugObjects : undefined,
+        !!generatorConfig.debugMode ? debugObjects : undefined,
+        enabledEras,
       )
     ),
     ...(generatorConfig.overlays || []).map((overlay) =>

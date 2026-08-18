@@ -7,6 +7,7 @@ import { EMPTY_FACTION, INDEPENDENT } from '../../../compute/constants';
 import { generateSectionPath } from './generate-section-path';
 import { traceFaction } from '../../../common/utils/faction-traversal-logger';
 import { resolveFactionRenderStyle, FactionRenderStyle } from '../types/faction-render-style';
+import { sanitizeFactionToken } from './sanitize-faction-token';
 
 /**
  * Generates the markup and css to render out borders.
@@ -52,21 +53,30 @@ export function renderBorderLoops(
       );
     }
 
-    if (factionKey === 'D' || factionKey.startsWith('D-')) {
-      const factionKeys = factionKey.replace(/^D-/g, '').split('-');
+    const safeKey = sanitizeFactionToken(factionKey);
 
-      if (factionKeys.length === 2) {
+    const isDisputed = factionKey === 'D' || /^D[-(]/.test(factionKey);
+
+    if (isDisputed) {
+      // Normalize disputed sub-factions from various formats:
+      // D-LC-DC, D-LC|DC, D(CC/FS), D-LC/DC all become ['LC','DC'] etc.
+      const factionKeys = factionKey
+        .replace(/^D[(]([^)]+)[)]$/i, '$1')
+        .replace(/^D-/g, '')
+        .split(/[-|/]/)
+        .filter(Boolean);
+
+      if (factionKeys.length >= 1) {
         const faction1 = factions[factionKeys[0]] || (style.disputedFactionIds[0] ? { color: style.color } : null);
-        const faction2 = factions[factionKeys[1]] || (style.disputedFactionIds[1] ? { color: style.color } : null);
+        const faction2 = factions[factionKeys[1]] || faction1 || null;
 
         defs += defTemplate.replace({
           prefix: defPrefix,
-          id: factionKey,
-          color1: faction1?.color || style.disputedFactionIds[0] ? '#999999' : '#c86464',
-          color2: faction2?.color || style.disputedFactionIds[1] ? '#999999' : '#c86464',
+          id: safeKey,
+          color1: faction1?.color || (style.disputedFactionIds[0] ? '#999999' : '#c86464'),
+          color2: faction2?.color || (style.disputedFactionIds[1] ? '#999999' : '#c86464'),
         });
 
-        // Trace missing sub-factions
         if (!faction1) {
           traceFaction(
             'src/render/svg/functions/render-border-loops.ts',
@@ -74,7 +84,7 @@ export function renderBorderLoops(
             factionKeys[0]
           );
         }
-        if (!faction2) {
+        if (factionKeys.length > 1 && !faction2) {
           traceFaction(
             'src/render/svg/functions/render-border-loops.ts',
             'missing-disputed-faction',
@@ -82,17 +92,15 @@ export function renderBorderLoops(
           );
         }
 
-        // Add CSS for the disputed pattern
         css += cssTemplate.replace({
           prefix: cssPrefix,
-          id: factionKey,
+          id: safeKey,
           strokeColor: 'transparent',
           strokeWidth: '0',
-          fill: `url(#${defPrefix}border-fill-${factionKey})`,
+          fill: `url(#${defPrefix}border-fill-${safeKey})`,
         });
 
       } else {
-        // FALLBACK: use generic 'D' pattern without reassigning factionKey
         defs += defTemplate.replace({
           prefix: defPrefix,
           id: 'D',
@@ -100,10 +108,9 @@ export function renderBorderLoops(
           color2: 'transparent',
         });
 
-        // Use 'D' as the pattern reference for CSS when falling back
         css += cssTemplate.replace({
           prefix: cssPrefix,
-          id: factionKey,
+          id: safeKey,
           strokeColor: 'transparent',
           strokeWidth: '0',
           fill: `url(#${defPrefix}border-fill-D)`,
@@ -113,7 +120,7 @@ export function renderBorderLoops(
     } else {
       css += cssTemplate.replace({
         prefix: cssPrefix,
-        id: factionKey,
+        id: safeKey,
         strokeColor: style.color || '#000',
         strokeWidth: '1px',
         fill: style.color || '#000',
@@ -122,34 +129,38 @@ export function renderBorderLoops(
 
     let factionMarkup = '';
     const loopPaths: Array<string> = [];
-    let loopAffiliations = '';
 
     borderLoops[factionKey].forEach((borderLoop) => {
       if ([undefined, EMPTY_FACTION].includes(borderLoop.innerAffiliation)) {
         return;
       }
 
-      // --- TRACE ---
-      const edge = { faction: factionKey };
+      // Shared-boundary dedup: a loop belongs to its inside/inner faction.
+      // When the same loop appears under two adjacent faction keys, only the
+      // inside faction should render it. Disputed keys use a composite key
+      // (e.g. D-LC-DC) so innerAffiliation won't match — skip dedup for them.
+      if (!isDisputed && borderLoop.innerAffiliation !== factionKey) {
+        return;
+      }
+
       traceFaction(
         'src/render/svg/functions/render-border-loops.ts',
         'border-loop',
-        edge.faction
+        factionKey
       );
 
-      loopAffiliations += borderLoop.innerAffiliation + ',';
       loopPaths.push(generateSectionPath(borderLoop, renderCurves));
     });
 
     if (loopPaths.length > 0) {
       factionMarkup += edgeTemplate.replace({ d: loopPaths.join(' ') });
-    }
 
-    markup += layerTemplate.replace({
-      name: factionKey,
-      css_class: 'faction-border-' + factionKey,
-      content: factionMarkup,
-    });
+      markup += layerTemplate.replace({
+        name: factionKey,
+        css_class: 'faction-border-' + safeKey,
+        content: factionMarkup,
+      });
+    }
   });
 
   if (markup.trim()) {

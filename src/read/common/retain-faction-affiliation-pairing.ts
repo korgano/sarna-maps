@@ -1,5 +1,6 @@
 import { Faction, System, Era, logger } from '../../common';
 import { traceFaction } from '../../common/utils/faction-traversal-logger';
+import { normalizeFactionKey } from '../../common/utils/normalize-faction-key';
 
 export interface FactionAffiliationPair {
   systemId: string;
@@ -20,9 +21,9 @@ export interface FactionAffiliationPair {
 const pairingCache: Map<string, FactionAffiliationPair> = new Map();
 
 /**
- * Normalize affiliation keys (centralized fix point)
- * Converts to uppercase for case-insensitive matching
- * Handles both comma and pipe separators to support v1 and v3 data formats
+ * Normalize affiliation keys using the shared normalizeFactionKey utility.
+ * Handles disputed parenthesized keys (e.g. D(LC|DC) -> D-LC-DC),
+ * v3 pipe-delimited data, region prefixes, and all v1/v2 formats.
  */
 function normalizeAffiliationKey(raw: string, fileName: string, stage: string): string {
   if (!raw) {
@@ -30,25 +31,7 @@ function normalizeAffiliationKey(raw: string, fileName: string, stage: string): 
     return '';
   }
 
-  const withoutHidden = raw.replace(/\s*\(H\)\s*$/i, '').trim();
-  const input = withoutHidden || raw;
-
-  const firstDivider = /[,|]/.exec(input);
-  let beforeDivider = firstDivider ? input.substring(0, firstDivider.index).trim() : input.trim();
-
-  const regionMatch = beforeDivider.match(/^([A-Za-z]+)\|Region\s+\d+$/i);
-  if (regionMatch) {
-    beforeDivider = regionMatch[1];
-    traceFaction(fileName, `${stage}:normalize:v3-format-fix`, `raw -> ${beforeDivider}`);
-  }
-
-  const pipeOnlyMatch = beforeDivider.match(/^([A-Za-z]+)\|.*$/i);
-  if (pipeOnlyMatch) {
-    beforeDivider = pipeOnlyMatch[1];
-    traceFaction(fileName, `${stage}:normalize:pipe-fix`, `pipe separator -> ${beforeDivider}`);
-  }
-
-  const normalized = beforeDivider.toUpperCase();
+  const normalized = normalizeFactionKey(raw);
   traceFaction(fileName, `${stage}:normalize:changed`, `${raw} -> ${normalized}`);
   return normalized;
 }
@@ -88,7 +71,49 @@ function resolveFactionForEra(
     return { faction: null, status: 'missing-affiliation' };
   }
 
-  const lookupKey = affiliationKey.toUpperCase();
+  let lookupKey = affiliationKey.toUpperCase();
+
+  // Handle disputed faction keys (e.g. D-FS-MC from D(FS/MC)).
+  // The D- prefix is a "disputed" marker, not part of the faction ID.
+  // Strip it and look up each sub-faction individually.
+  if (lookupKey.startsWith('D-')) {
+    const subKeyParts = lookupKey.slice(2).split('-');
+    const subCandidates: Faction[] = [];
+    for (const part of subKeyParts) {
+      const subLookupKey = part.toUpperCase();
+      const subCand = factionLookup.get(subLookupKey);
+      if (subCand) {
+        subCandidates.push(...subCand);
+      }
+    }
+    if (subCandidates.length > 0) {
+      traceFaction(
+        fileName,
+        `${stage}:resolve:disputed-sub-factions`,
+        `${subCandidates.map((f) => f.id).join(', ')}`
+      );
+      const valid = subCandidates.filter(f => {
+        const foundingOk = f.founding === undefined || f.founding <= era.year;
+        const dissolutionOk = f.dissolution === null || f.dissolution === undefined || f.dissolution >= era.year;
+        return foundingOk && dissolutionOk;
+      });
+      traceFaction(fileName, `${stage}:resolve:valid-count`, `${valid.length}`);
+
+      if (valid.length === 0) {
+        traceFaction(fileName, `${stage}:resolve:no-era-match`, lookupKey);
+        return { faction: null, status: 'no-era-match' };
+      }
+
+      if (valid.length > 1) {
+        traceFaction(fileName, `${stage}:resolve:multiple-matches`, lookupKey);
+        return { faction: valid[0], status: 'multiple-matches' };
+      }
+
+      traceFaction(fileName, `${stage}:resolve:success`, lookupKey);
+      return { faction: valid[0], status: 'success' };
+    }
+  }
+
   const candidates = factionLookup.get(lookupKey);
 
   if (!candidates || candidates.length === 0) {

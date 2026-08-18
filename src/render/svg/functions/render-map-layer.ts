@@ -14,6 +14,7 @@ import { restrictSystemsToViewbox } from '../../../compute/restrict-objects-to-v
 import {
   BorderEdgeLoop,
   placeBorderLabels,
+  placeRegionLabels,
   placeSystemLabels,
   VoronoiResult,
   VoronoiResultHierarchyLevel
@@ -63,6 +64,7 @@ export function renderMapLayer(
   systems: Array<System>,
   focusedSystem?: System,
   debugObjects?: Partial<VoronoiResult>,
+  enabledEras?: number[],
 ) {
   // PHASE 1: PREPARE ALL NECESSARY DATA
   const pixelDimensions = mapLayerConfig.dimensions || imageDimensions;
@@ -107,6 +109,7 @@ export function renderMapLayer(
         labelGrid,
         globalConfigs.glyphConfig,
         globalConfigs.systemLabelConfig,
+        factionMap,
       )
     : [];
 
@@ -140,7 +143,7 @@ export function renderMapLayer(
     //   )
     // : {};
 
-  // Place border labels TODO enable for lower hierarchy levels
+  // Place border labels for faction level (level 0)
   const borderLabels = (mapLayerConfig.elements.borders?.length || 0) >= 1
     ? placeBorderLabels(
         visibleViewRect,
@@ -153,6 +156,30 @@ export function renderMapLayer(
         globalConfigs.borderLabelConfig,
       )
     : { candidatesByFaction: {} };
+
+  // Place region border labels for hierarchy levels 1+ (only where borderLabels: true)
+  const regionLabelResults: Array<{ defs: string; css: string; markup: string }> = [];
+  mapLayerConfig.elements.borders?.forEach((bordersConfig, levelIndex) => {
+    if (levelIndex === 0) return;
+    if (bordersConfig.display !== 'regions') return;
+    if (!bordersConfig.borderLabels) return;
+    if (levelIndex >= affiliationLevelSections.length) return;
+
+    const levelLoops = affiliationLevelSections[levelIndex].borderLoops || {};
+    if (Object.keys(levelLoops).length === 0) return;
+
+    const result = placeRegionLabels(
+      levelLoops,
+      levelIndex,
+      factionMap,
+      labelGrid,
+      globalConfigs.glyphConfig,
+      visibleViewRect,
+    );
+    if (result) {
+      regionLabelResults.push(result);
+    }
+  });
 
   // PHASE 2: RENDER ELEMENTS
   const layerCssClass = mapLayerConfig.name.replace(/\s+/g, '-');
@@ -197,11 +224,21 @@ export function renderMapLayer(
   //     ? renderBorderLoops(boundedBorderLoops, factionMap, theme, mapLayerConfig.elements.borders[0].curveBorderEdges, layerCssClass)
   //     : { defs: '', css: '', markup: '' };
 
-  // TODO enable for lower hierarchy levels
+  // Render faction border labels (level 0)
   const { defs: borderLabelDefs, css: borderLabelCss, markup: borderLabelMarkup } =
     mapLayerConfig.elements.borders?.length && mapLayerConfig.elements.borders[0].borderLabels
       ? renderBorderLabels(borderLabels, factionMap, pairs, theme, layerCssClass, zoomFactor)
       : { defs: '', css: '', markup: '' };
+
+  // Render region border labels (levels 1+)
+  let regionBorderLabelDefs = '';
+  let regionBorderLabelCss = '';
+  let regionBorderLabelMarkup = '';
+  for (const rl of regionLabelResults) {
+    regionBorderLabelDefs += rl.defs + '\n';
+    regionBorderLabelCss += rl.css + '\n';
+    regionBorderLabelMarkup += rl.markup + '\n';
+  }
 
   const { defs: jumpRingDefs, css: jumpRingCss, markup: jumpRingMarkup } = mapLayerConfig.elements.jumpRings
     ? renderJumpRings(mapLayerConfig, focusPoint, theme, layerCssClass)
@@ -213,7 +250,7 @@ export function renderMapLayer(
       : { defs: '', css: '', markup: '' };
 
   const { defs: systemDefs, css: systemCss, markup: systemMarkup } = mapLayerConfig.elements.systems
-    ? renderSystems(visibleSystems, factionMap, pairs, theme, era.index, layerCssClass)
+    ? renderSystems(visibleSystems, factionMap, pairs, theme, era.index, layerCssClass, undefined, enabledEras)
     : { defs: '', css: '', markup: '' };
 
   const { css: systemLabelCss, markup: systemLabelMarkup } = mapLayerConfig.elements.systemLabels
@@ -268,6 +305,7 @@ export function renderMapLayer(
   const markup = [
     factionMarkup,
     borderLabelMarkup,
+    regionBorderLabelMarkup,
     jumpRingMarkup,
     connectionLineMarkup,
     systemMarkup,
@@ -279,13 +317,14 @@ export function renderMapLayer(
     .join('\n');
   if (markup) {
     return {
-      defs: [mapSectionDef, factionDefs, borderLabelDefs, jumpRingDefs, systemDefs, debugDefs]
+      defs: [mapSectionDef, factionDefs, borderLabelDefs, regionBorderLabelDefs, jumpRingDefs, systemDefs, debugDefs]
         .filter((code) => !!code.trim())
         .join('\n'),
       css: [
         mapSectionCss,
         factionCss,
         borderLabelCss,
+        regionBorderLabelCss,
         jumpRingCss,
         systemCss,
         connectionLineCss,
@@ -314,5 +353,28 @@ export function renderMapLayer(
       css: '',
       markup: '',
     };
+  }
+}
+
+/**
+ * Guard: verify that every url(#id) referenced in the CSS has a matching
+ * element in the defs block. Logs an error for each missing def.
+ */
+export function assertFillDefsPresent(defs: string, css: string, sourceFile: string): void {
+  const urlRefs = css.matchAll(/url\(#([^)]+)\)/g);
+  const definedIds = new Set<string>();
+  const idMatches = defs.matchAll(/id="([^"]+)"/g);
+  for (const m of idMatches) {
+    definedIds.add(m[1]);
+  }
+
+  for (const m of urlRefs) {
+    const refId = m[1];
+    if (!definedIds.has(refId)) {
+      logger.error(
+        sourceFile,
+        `Missing fill def: CSS references url(#${refId}) but no matching element found in <defs>.`
+      );
+    }
   }
 }

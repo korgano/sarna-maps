@@ -56,12 +56,14 @@ export function placeBorderLabels(
 
     traceFaction(FILE_NAME, 'PROCESS factionKey', factionKey);
 
-    // --- Skip invalid / special factions ---
+    // --- Skip invalid / special / unassigned factions ---
     if (
       factionKey === EMPTY_FACTION ||
       factionKey === INDEPENDENT ||
       factionKey === 'D' ||
-      factionKey.startsWith('D-')
+      factionKey.startsWith('D-') ||
+      /,Unassigned$/.test(factionKey) ||
+      factionKey === 'Unassigned'
     ) {
       traceFaction(FILE_NAME, 'SKIPPED factionKey', factionKey);
       return;
@@ -75,6 +77,22 @@ export function placeBorderLabels(
     });
 
     let faction = style.faction;
+    let regionName: string | null = null;
+
+    // --- Handle hierarchical faction keys (e.g. "FWL,Duchy of Andurien") ---
+    if (!faction && factionKey.includes(',')) {
+      const [factionId, ...regionParts] = factionKey.split(',');
+      const topFaction = factionMap[factionId] || factionMap[factionId.toUpperCase()];
+      if (topFaction) {
+        faction = { ...topFaction };
+        regionName = regionParts.join(',').trim();
+        faction = {
+          ...topFaction,
+          name: regionName,
+          id: factionKey,
+        };
+      }
+    }
 
     // --- Missing faction handling ---
     if (!faction) {
@@ -85,7 +103,7 @@ export function placeBorderLabels(
 
       faction = {
         id: factionKey,
-        name: 'Unknown Faction',
+        name: factionKey,
         color: style.color || '#999999',
       };
 
@@ -215,6 +233,14 @@ export function placeBorderLabels(
           factionLabelGrid
         );
       }
+
+      selectedCandidates.forEach((candidate) => {
+        grid.placeItem({
+          id: candidate.id,
+          anchor: { ...candidate.anchorPoint },
+          dimensions: { width: 1, height: 1 },
+        });
+      });
 
       selectedCandidates.sort((a, b) => b.score - a.score);
 

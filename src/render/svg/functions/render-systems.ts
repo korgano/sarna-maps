@@ -1,5 +1,5 @@
 import {
-  extractBorderStateAffiliation,
+  canonicalAffiliation,
   Faction,
   logger,
   System,
@@ -31,6 +31,7 @@ export function renderSystems(
   eraIndex = 0,
   prefix = '',
   systemRadius = 1,
+  enabledEras?: number[],
 ) {
   const templatePath = path.join(__dirname, '../templates/', theme);
   const cssTemplate = new TextTemplate('system-points.css.tpl', templatePath);
@@ -39,12 +40,11 @@ export function renderSystems(
   const capitalDecorationTemplate = new TextTemplate('system-decoration.svg.tpl', templatePath);
   const clusterTemplate = new TextTemplate('cluster-ellipse.svg.tpl', templatePath);
 
-  const visibleFactions: Record<string, Faction> = {};
+  const visibleFactions: Record<string, Faction | null> = {};
   const factionStyles: Record<string, FactionRenderStyle> = {};
 
   let markup = '';
   let defs = '';
-  const defPrefix = prefix.length ? prefix + '-' : '';
   const cssPrefix = prefix.length ? `.${prefix} ` : '';
 
   systems.forEach((system) => {
@@ -55,14 +55,15 @@ export function renderSystems(
     // ---- TRACE: raw affiliation ----
     traceFaction('/src/render/svg/functions/render-systems.ts', 'INPUT raw-affiliation', String(eraAffiliation));
 
-    let displayedFaction = extractBorderStateAffiliation(
+    let displayedFaction = canonicalAffiliation(
       eraAffiliation,
-      ['', 'U'], // Keep default ignored affiliations
-      'faction',
-      undefined,
-      undefined,
-      system.id,
-      eraIndex
+      {
+        levels: 1,
+        parseHiddenSystemsAs: 'ignore',
+        ignoredAffiliations: ['', 'A', 'U'],
+        systemId: system.id,
+        eraIndex,
+      }
     );
 
     // ---- TRACE: extracted faction ----
@@ -91,7 +92,7 @@ export function renderSystems(
       logger.debug('empty faction string for', system.name);
     }
 
-    if (!visibleFactions[displayedFaction] && style.faction) {
+    if (!visibleFactions[displayedFaction]) {
       visibleFactions[displayedFaction] = style.faction;
     }
 
@@ -119,13 +120,25 @@ export function renderSystems(
         });
       }
 
-      markup += systemTemplate.replace({
-        x: system.x.toFixed(3),
-        y: (-system.y).toFixed(3),
-        radius: systemRadius,
-        name: eraName,
-        css_class: displayedFaction + (systemIsHidden ? ' hidden' : '') + (systemIsAbandoned ? ' abandoned' : ''),
-      });
+      if (displayedFaction.startsWith('D-')) {
+        markup += generateDisputedSystemFillPattern(
+          displayedFaction,
+          factions,
+          system.x,
+          -system.y,
+          systemRadius,
+          style,
+          eraName,
+        );
+      } else {
+        markup += systemTemplate.replace({
+          x: system.x.toFixed(3),
+          y: (-system.y).toFixed(3),
+          radius: systemRadius,
+          name: eraName,
+          css_class: displayedFaction + (systemIsHidden ? ' hidden' : '') + (systemIsAbandoned ? ' abandoned' : ''),
+        });
+      }
 
       if (eraCapitalLevel > 0) {
         markup += capitalDecorationTemplate.replace({
@@ -161,18 +174,27 @@ export function renderSystems(
     } else if (factionKey === 'D') {
       // handled in default template
     } else if (factionKey.startsWith('D-')) {
-      defs += generateDisputedSystemFillPattern(factionKey, factions, defPrefix, style);
-      factionCss += `${cssPrefix}g.systems .system.${factionKey}, g.systems .cluster.${factionKey} { fill: url(#${defPrefix}system-fill-${factionKey}) }\n`;
+      // Disputed dots carry self-filled wedge paths (one per faction), so no
+      // fill/pattern rule is needed here — only the border ring is styled.
+      // The ring must match the regular system dot stroke thickness (.25).
+      const disputedStroke = theme === 'dark' ? '#fff' : '#000';
+      factionCss +=
+        `${cssPrefix}.system.${factionKey} .disputed-dot-border, .cluster.${factionKey} .disputed-dot-border { fill: none; stroke: ${disputedStroke}; stroke-width: .25; }\n`;
+      // Clusters cannot host pie wedges; fill them with the first faction's
+      // colour so they never fall back to the default black fill.
+      const firstFactionId = factionKey.replace(/^D-?/, '').split('-').filter(Boolean)[0] || '';
+      const firstFactionColor = factions[firstFactionId]?.color || '#999999';
+      factionCss += `${cssPrefix}.cluster.${factionKey} { fill: ${firstFactionColor}; }\n`;
     } else if (!faction && style?.resolutionStatus === 'no-faction-match') {
       // Use default gray color for missing factions (resolved via pairing data)
-      factionCss += `${cssPrefix}g.systems .system.${factionKey}, g.systems .cluster.${factionKey} { fill: ${style.color} }\n`;
+      factionCss += `${cssPrefix}.system.${factionKey}, .cluster.${factionKey} { fill: ${style.color} }\n`;
     } else if (!faction) {
       logger.warn(
         'render-systems.ts',
         `Cannot find faction for affiliation key "${factionKey}". Systems will be displayed in the default color.`
       );
     } else {
-      factionCss += `${cssPrefix}g.systems .system.${factionKey}, g.systems .cluster.${factionKey} { fill: ${faction.color || style?.color || '#999999'} }\n`;
+      factionCss += `${cssPrefix}.system.${factionKey}, .cluster.${factionKey} { fill: ${faction.color || style?.color || '#999999'} }\n`;
     }
   });
 

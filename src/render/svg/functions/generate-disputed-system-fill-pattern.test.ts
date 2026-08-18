@@ -10,52 +10,47 @@ const factions: Record<string, Faction> = {
   FS: { id: 'FS', name: 'Federated Suns', color: '#cccc44' },
 };
 
-/** Extracts the id="..." emitted on the <pattern> element. */
-function patternId(markup: string): string | null {
-  return markup.match(/<pattern id="([^"]+)"/)?.[1] ?? null;
+const PI = Math.PI;
+
+/**
+ * Signed angular span actually drawn by an `A ... sweep-flag` arc, following
+ * the SVG F.6.5 endpoint-to-center conversion: the signed difference is
+ * normalised to (-π, π] and then forced to match the sweep flag's sign.
+ */
+function sweptSpan(startAngle: number, endAngle: number, sweep: number): number {
+  let d = endAngle - startAngle;
+  while (d > PI) d -= 2 * PI;
+  while (d <= -PI) d += 2 * PI;
+  if (!sweep && d > 0) d -= 2 * PI;
+  else if (sweep && d < 0) d += 2 * PI;
+  return d;
 }
 
 describe('generateDisputedSystemFillPattern', () => {
-  it('emits a pattern id that matches the sanitized url() reference', () => {
-    // render-systems.ts references `url(#<prefix>system-fill-<safeKey>)`.
+  it('emits a group whose class carries the sanitized faction key', () => {
     for (const key of ['D-LC-DC', 'D-CC/FS', 'D(CC/FS)', 'D-CC-FS']) {
       const markup = generateDisputedSystemFillPattern(key, factions);
-      const expected = `system-fill-${sanitizeFactionToken(key)}`;
-      expect(patternId(markup), `id for ${key}`).to.equal(expected);
+      expect(markup, `class for ${key}`).to.contain(`class="system disputed ${sanitizeFactionToken(key)}"`);
     }
   });
 
-  it('produces an id that is a legal SVG id (no illegal characters)', () => {
+  it('produces a class that is a legal SVG/CSS token (no illegal characters)', () => {
     const markup = generateDisputedSystemFillPattern('D-CC/FS', factions);
-    const id = patternId(markup) as string;
+    const factionToken = (markup.match(/class="[^"]+ ([^"]+)"/)?.[1] || '').trim();
 
-    expect(id).to.not.contain('/');
-    expect(id).to.not.contain('(');
-    expect(id).to.not.contain(')');
-    expect(id).to.match(/^[A-Za-z0-9_-]+$/);
+    expect(factionToken).to.contain('D-CC_2fFS');
+    expect(factionToken).to.not.contain('/');
+    expect(factionToken).to.not.contain('(');
+    expect(factionToken).to.not.contain(')');
+    expect(factionToken).to.match(/^[A-Za-z0-9_-]+$/);
   });
 
-  it('honours the def prefix so regional layers stay isolated', () => {
-    const markup = generateDisputedSystemFillPattern('D-LC-DC', factions, 'region-a-');
+  it('draws the wedges at the given center and radius', () => {
+    const markup = generateDisputedSystemFillPattern('D-LC-DC', factions, 10, -20, 3);
 
-    expect(patternId(markup)).to.equal('region-a-system-fill-D-LC-DC');
-  });
-
-  it('declares patternUnits and disables aspect-ratio letterboxing', () => {
-    const markup = generateDisputedSystemFillPattern('D-LC-DC', factions);
-
-    expect(markup).to.contain('patternUnits="objectBoundingBox"');
-    // Required so elliptical cluster icons are fully covered rather than
-    // letterboxed with unpainted bands.
-    expect(markup).to.contain('preserveAspectRatio="none"');
-    expect(markup).to.contain('viewBox="-1 -1 2 2"');
-  });
-
-  it('rotates via a presentation attribute, not a CSS style transform', () => {
-    const markup = generateDisputedSystemFillPattern('D-LC-DC', factions);
-
-    expect(markup).to.contain('<g transform="rotate(-90)">');
-    expect(markup).to.not.contain('style="transform:rotate');
+    expect(markup).to.contain('M10,-20');
+    expect(markup).to.contain('A3,3,0,0,1,');
+    expect(markup).to.contain('<circle class="disputed-dot-border" cx="10" cy="-20" r="3"');
   });
 
   it('emits one closed wedge per faction, in that faction colour', () => {
@@ -63,9 +58,11 @@ describe('generateDisputedSystemFillPattern', () => {
     const paths = markup.match(/<path /g) || [];
 
     expect(paths.length).to.equal(2);
-    expect(markup).to.contain('fill:#4477cc');
-    expect(markup).to.contain('fill:#cc4444');
-    // Every wedge must be explicitly closed, else the fill can leak.
+    // Valid SVG attribute syntax: fill="<color>" (the old fill:<color> colon
+    // form was an invalid attribute that parsers silently discarded).
+    expect(markup).to.contain('fill="#4477cc"');
+    expect(markup).to.contain('fill="#cc4444"');
+    // Every wedge must be explicitly closed to center (0,0), else the fill leaks.
     expect((markup.match(/L0,0Z/g) || []).length).to.equal(2);
   });
 
@@ -82,8 +79,8 @@ describe('generateDisputedSystemFillPattern', () => {
   });
 
   it('sets the large-arc flag only for slices bigger than a half circle', () => {
-    // Three factions => 120 degrees per slice => short arc.
-    const three = generateDisputedSystemFillPattern('D-LC-DC-CC', factions);
+    // Three factions => 120 degrees per slice => short arc (large-arc flag 0).
+    const three = generateDisputedSystemFillPattern('D-LC-DC-CC', factions, 0, 0, 1);
     expect(three).to.contain('A1,1,0,0,1,');
     expect(three).to.not.contain('A1,1,0,1,1,');
   });
@@ -92,6 +89,38 @@ describe('generateDisputedSystemFillPattern', () => {
     expect((generateDisputedSystemFillPattern('D-LC-DC', factions).match(/<path /g) || []).length).to.equal(2);
     expect((generateDisputedSystemFillPattern('D-LC-DC-CC', factions).match(/<path /g) || []).length).to.equal(3);
     expect((generateDisputedSystemFillPattern('D-LC-DC-CC-FS', factions).match(/<path /g) || []).length).to.equal(4);
+  });
+
+  it('spans exactly 360/N degrees per wedge and sums to a full circle', () => {
+    const cases: Array<[string, number]> = [
+      ['D-LC-DC', 2],
+      ['D-LC-DC-CC', 3],
+      ['D-LC-DC-CC-FS', 4],
+      ['D-LC-DC-CC-FS-CC', 5],
+      ['D-LC-DC-CC-FS-CC-CC', 6],
+      ['D-LC-DC-CC-FS-CC-CC-CC', 7],
+    ];
+
+    for (const [key, N] of cases) {
+      const markup = generateDisputedSystemFillPattern(key, factions);
+      const dAttrs = markup.match(/ d="([^"]+)"/g) || [];
+      expect(dAttrs.length, `${key} wedge count`).to.equal(N);
+
+      let total = 0;
+      for (const attr of dAttrs) {
+        const m = attr.match(
+          /^ d="M([-\d.]+),([-\d.]+) L([-\d.]+),([-\d.]+) A[-\d.]+,([-\d.]+),0,0,1,([-\d.]+),([-\d.]+) L/
+        );
+        expect(m, `${key}: ${attr}`).not.to.equal(null);
+        const [, cx, cy, x1, y1, , x2, y2] = m!.map(Number);
+        const a1 = Math.atan2(y1 - cy, x1 - cx);
+        const a2 = Math.atan2(y2 - cy, x2 - cx);
+        const span = sweptSpan(a1, a2, 1);
+        expect(span, `${key} wedge span`).toBeCloseTo((2 * Math.PI) / N, 8);
+        total += span;
+      }
+      expect(total, `${key} total`).toBeCloseTo(2 * Math.PI, 8);
+    }
   });
 
   it('falls back to grey for an unknown faction rather than dropping the slice', () => {
