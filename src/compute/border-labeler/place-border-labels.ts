@@ -27,6 +27,34 @@ import { resolveFactionRenderStyle } from '../../render/svg/types/faction-render
 
 const FILE_NAME = 'place-border-labels.ts';
 
+/**
+ * Compute the axis-aligned bounding rectangle of a border label candidate's
+ * (possibly rotated) label rectangle.
+ */
+function candidateBoundingRect(candidate: BorderLabelCandidate): {
+  anchor: { x: number; y: number };
+  dimensions: { width: number; height: number };
+} {
+  const corners = [candidate.rect.bl, candidate.rect.br, candidate.rect.tl, candidate.rect.tr];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const corner of corners) {
+    if (corner.x < minX) minX = corner.x;
+    if (corner.x > maxX) maxX = corner.x;
+    if (corner.y < minY) minY = corner.y;
+    if (corner.y > maxY) maxY = corner.y;
+  }
+  return {
+    anchor: { x: minX, y: minY },
+    dimensions: {
+      width: Math.max(maxX - minX, 0.01),
+      height: Math.max(maxY - minY, 0.01),
+    },
+  };
+}
+
 export function placeBorderLabels(
   viewBox: Rectangle2d,
   eraIndex: number,
@@ -168,6 +196,15 @@ export function placeBorderLabels(
         dimensions: { width: 1, height: 1 },
       });
 
+      // also register the candidate's actual rectangle in the main label grid, so that
+      // region labels and other labels can reliably avoid overlapping it
+      const bbox = candidateBoundingRect(candidate);
+      grid.placeItem({
+        id: candidate.id,
+        anchor: bbox.anchor,
+        dimensions: bbox.dimensions,
+      });
+
       traceFaction(
         FILE_NAME,
         'MANUAL CANDIDATE PLACED',
@@ -235,10 +272,11 @@ export function placeBorderLabels(
       }
 
       selectedCandidates.forEach((candidate) => {
+        const bbox = candidateBoundingRect(candidate);
         grid.placeItem({
           id: candidate.id,
-          anchor: { ...candidate.anchorPoint },
-          dimensions: { width: 1, height: 1 },
+          anchor: bbox.anchor,
+          dimensions: bbox.dimensions,
         });
       });
 

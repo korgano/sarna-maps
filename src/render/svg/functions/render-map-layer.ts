@@ -175,6 +175,9 @@ export function renderMapLayer(
       labelGrid,
       globalConfigs.glyphConfig,
       visibleViewRect,
+      globalConfigs.systemLabelConfig,
+      globalConfigs.borderLabelConfig,
+      affiliationLevelSections.length > 0 ? affiliationLevelSections[0].borderLoops || {} : {},
     );
     if (result) {
       regionLabelResults.push(result);

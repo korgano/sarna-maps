@@ -140,6 +140,7 @@ export async function readConfigFiles(fileNames: {
       cornerDistanceFactor: 1,
       minViableScore: 1,
       minGoodScore: 1,
+      regionLabelBorderOverlapThreshold: 2,
     },
     ...(borderLabelConfig.rules || {}),
   };
