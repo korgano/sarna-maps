@@ -31,7 +31,6 @@ export function renderSystems(
   eraIndex = 0,
   prefix = '',
   systemRadius = 1,
-  enabledEras?: number[],
 ) {
   const templatePath = path.join(__dirname, '../templates/', theme);
   const cssTemplate = new TextTemplate('system-points.css.tpl', templatePath);

@@ -111,8 +111,15 @@ async function run() {
   // No programmatic overrides - YAML config is the only method
 
   const sheetData = await readData(dataSourceConfig);
+  // FactionRegistry: canonical map keyed case-insensitively.
+  // Preserve original id for display (AuC) but also index by upper-case to guarantee
+  // `resolveFactionRenderStyle` finds mixed-case ids (AuC, CoF, SiS) when normalized
+  // keys arrive as AUC/COF. This is the single source of truth for faction lookup.
   const factionMap: Record<string, Faction> = {};
-  sheetData.factions.forEach((faction: Faction) => factionMap[faction.id] = faction);
+  sheetData.factions.forEach((faction: Faction) => {
+    factionMap[faction.id] = faction;
+    factionMap[faction.id.toUpperCase()] = faction;
+  });
 
   await writeSvgMaps(
     generatorConfig,

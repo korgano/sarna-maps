@@ -44,10 +44,36 @@ export function resolveFactionRenderStyle(options: {
 
   const key = rawKey || '';
   const upperKey = key.toUpperCase();
-  const isDisputed = key.startsWith('D-') || key === 'D';
-  const disputedFactionIds = isDisputed ? key.replace(/^D-?/, '').split('-').filter(Boolean) : [];
+  // Disputed includes D- prefix and parenthesized forms D(F1|F2), D(F1/F2) etc.
+  const isDisputed = key.startsWith('D-') || key === 'D' || /^D\(/i.test(key);
+  let disputedFactionIds: string[] = [];
+  if (isDisputed) {
+    if (key.startsWith('D(')) {
+      const inner = key.slice(2, -1); // strip D( ... )
+      disputedFactionIds = inner.split(/[-|/,]/).map(s=>s.trim()).filter(Boolean);
+    } else {
+      disputedFactionIds = key.replace(/^D-?/, '').split('-').filter(Boolean);
+    }
+  }
 
-  const faction = (factionMap[key] || factionMap[upperKey] || null);
+  // Case-insensitive lookup: map may be keyed raw (AuC) or upper (AUC).
+  // Helper scans both direct keys and values' ids to handle any caller-built map.
+  // Also handles abandoned-world wrapper A(FACTION) -> inner faction.
+  function findFactionInsensitive(map: Record<string, Faction>, k: string): Faction | null {
+    if (!k) return null;
+    // Unwrap abandoned-world keys A(CFG) -> CFG for lookup
+    const abandonedMatch = k.match(/^A\(([^)]+)\)$/i);
+    const lookupKey = abandonedMatch ? abandonedMatch[1] : k;
+    if (map[lookupKey]) return map[lookupKey];
+    const uk = lookupKey.toUpperCase();
+    if (map[uk]) return map[uk];
+    for (const f of Object.values(map)) {
+      if (f.id.toUpperCase() === uk) return f;
+    }
+    return null;
+  }
+  // For disputed keys, faction is null (multiple owners); for abandoned, lookup inner
+  const faction = isDisputed ? null : findFactionInsensitive(factionMap, key);
 
   return {
     faction,

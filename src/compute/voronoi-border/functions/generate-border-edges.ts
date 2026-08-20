@@ -24,9 +24,9 @@ export function generateBorderEdges(voronoiNodes: VoronoiBorderNode[], vertices:
     const vertex2 = vertices[voronoiNode.vertex2Idx];
     const vertex3 = vertices[voronoiNode.vertex3Idx];
 
-    const v1Affiliation = canonicalAffiliation(vertex1.affiliation, { levels: affiliationLevels, removeCapitalTokens: true, syntheticPoint: true });
-    const v2Affiliation = canonicalAffiliation(vertex2.affiliation, { levels: affiliationLevels, removeCapitalTokens: true, syntheticPoint: true });
-    const v3Affiliation = canonicalAffiliation(vertex3.affiliation, { levels: affiliationLevels, removeCapitalTokens: true, syntheticPoint: true });
+    const v1Affiliation = canonicalAffiliation(vertex1.affiliation, { levels: 1, removeCapitalTokens: true, syntheticPoint: true });
+    const v2Affiliation = canonicalAffiliation(vertex2.affiliation, { levels: 1, removeCapitalTokens: true, syntheticPoint: true });
+    const v3Affiliation = canonicalAffiliation(vertex3.affiliation, { levels: 1, removeCapitalTokens: true, syntheticPoint: true });
 
     if (!borderNodeIndices[v1Affiliation]) { borderNodeIndices[v1Affiliation] = [] }
     if (!borderNodeIndices[v2Affiliation]) { borderNodeIndices[v2Affiliation] = [] }

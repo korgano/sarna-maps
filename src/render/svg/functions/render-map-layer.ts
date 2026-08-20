@@ -64,7 +64,6 @@ export function renderMapLayer(
   systems: Array<System>,
   focusedSystem?: System,
   debugObjects?: Partial<VoronoiResult>,
-  enabledEras?: number[],
 ) {
   // PHASE 1: PREPARE ALL NECESSARY DATA
   const pixelDimensions = mapLayerConfig.dimensions || imageDimensions;
@@ -203,7 +202,9 @@ export function renderMapLayer(
         pairs,
         theme,
         bordersConfig.curveBorderEdges,
-        layerCssClass
+        layerCssClass,
+        systems,
+        era.index,
       );
       factionDefs += defs + '\n';
       factionCss += css + '\n';
@@ -253,7 +254,7 @@ export function renderMapLayer(
       : { defs: '', css: '', markup: '' };
 
   const { defs: systemDefs, css: systemCss, markup: systemMarkup } = mapLayerConfig.elements.systems
-    ? renderSystems(visibleSystems, factionMap, pairs, theme, era.index, layerCssClass, undefined, enabledEras)
+    ? renderSystems(visibleSystems, factionMap, pairs, theme, era.index, layerCssClass)
     : { defs: '', css: '', markup: '' };
 
   const { css: systemLabelCss, markup: systemLabelMarkup } = mapLayerConfig.elements.systemLabels

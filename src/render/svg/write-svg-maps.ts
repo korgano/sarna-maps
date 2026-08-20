@@ -40,7 +40,6 @@ export async function writeSvgMaps(
     borderLabelConfig,
   };
 
-  const enabledEras = generatorConfig.eras || [];
   const erasToIterateOver = eras.filter((era) =>
     !generatorConfig.eras || generatorConfig.eras.length === 0 || generatorConfig.eras.includes(era.index)
   );
@@ -102,7 +101,6 @@ export async function writeSvgMaps(
           {
             salientPoints,
           },
-          enabledEras,
         );
       });
     } else if (objectsToIterateOver) {
@@ -122,7 +120,6 @@ export async function writeSvgMaps(
         {
           salientPoints,
         },
-        enabledEras,
       );
     }
   }
@@ -158,7 +155,6 @@ function generateAndSaveSingleMapImage(
   focusedSystem?: System,
   focusedSystemIndex?: number,
   debugObjects?: Partial<VoronoiResult>,
-  enabledEras?: number[],
 ) {
   const filePath = determineOutputFilePath(
     config.fileOutput.directory,
@@ -178,7 +174,6 @@ function generateAndSaveSingleMapImage(
     systems,
     focusedSystem,
     debugObjects,
-    enabledEras,
   );
 
   logger.debug(`Now attempting to write file "${filePath}"`);

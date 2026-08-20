@@ -1,6 +1,6 @@
 import { expect, describe, it } from 'vitest';
 import { renderBorderLoops } from './render-border-loops';
-import { Faction } from '../../../common';
+import { Faction, System } from '../../../common';
 
 function factionMap(entries: Array<[string, string, string]>): Record<string, Faction> {
   const map: Record<string, Faction> = {};
@@ -142,6 +142,124 @@ describe('renderBorderLoops shared-boundary handling', () => {
     // in the output at all — no filled loop, no stroke-only path.
     expect(result.markup).to.equal('');
     expect(result.css).to.equal('');
+  });
+});
+
+describe('renderBorderLoops radius-bounded faction fill', () => {
+  function system(id: string, x: number, y: number, radius: number, affiliation = 'LC'): System {
+    return {
+      id,
+      name: id,
+      fullName: id,
+      x,
+      y,
+      radiusX: radius,
+      radiusY: radius,
+      rotation: 0,
+      isCluster: false,
+      eraAffiliations: [affiliation],
+      eraCapitalLevels: [0],
+      eraNames: ['Era0'],
+    };
+  }
+
+  it('renders radius-bounded regions as compact <circle> primitives, not 64-vertex polygon paths', () => {
+    const factions = factionMap([
+      ['LC', 'Lyran Commonwealth', '#3366cc'],
+    ]);
+
+    const result = renderBorderLoops(
+      { LC: [loop('LC')] },
+      factions,
+      new Map(),
+      'light',
+      true,
+      '',
+      [system('s1', 10, 20, 2), system('s2', -30, 40, 1.5)],
+      0,
+    );
+
+    // one native circle per radius-bearing system, y flipped for render space
+    const circles = result.markup.match(/<circle /g) || [];
+    expect(circles.length).to.equal(2);
+    expect(result.markup).to.contain('cx="10.000"');
+    expect(result.markup).to.contain('cy="-20.000"');
+    expect(result.markup).to.contain('r="2.000"');
+    expect(result.markup).to.contain('cx="-30.000"');
+    expect(result.markup).to.contain('cy="-40.000"');
+    expect(result.markup).to.contain('r="1.500"');
+
+    // the boundary loop is rendered as a filled territory path (additive with disks)
+    // Previously disks REPLACED territory (fill:none), now disks are additive overlays
+    expect(result.markup).to.contain('<path ');
+    expect(result.markup).not.to.contain('style="fill: none"');
+  });
+
+  it('keeps the rendered faction-region markup compact regardless of system count', () => {
+    const factions = factionMap([
+      ['LC', 'Lyran Commonwealth', '#3366cc'],
+    ]);
+    const systems = Array.from({ length: 1000 }, (_, i) => system(`s${i}`, i * 10, 0, 2));
+
+    const result = renderBorderLoops(
+      { LC: [loop('LC')] },
+      factions,
+      new Map(),
+      'light',
+      true,
+      '',
+      systems,
+      0,
+    );
+
+    // each radius-bounded disk must stay a small primitive (~70 bytes), never a
+    // ~800 byte 64-gon path. 1000 disks must not exceed 150 KB total.
+    const diskBytes = (result.markup.match(/<circle [^>]*\/>/g) || []).join('').length;
+    expect(diskBytes).to.be.lessThan(150_000);
+    expect(result.markup).not.to.match(/d="M[\d.\-,]+ L[\d.\-,]+/);
+  });
+
+  it('adds the circle selector to the faction-border css so disks keep faction fill styling', () => {
+    const factions = factionMap([
+      ['LC', 'Lyran Commonwealth', '#3366cc'],
+    ]);
+
+    const result = renderBorderLoops(
+      { LC: [loop('LC')] },
+      factions,
+      new Map(),
+      'dark',
+      true,
+      '',
+      [system('s1', 0, 0, 2)],
+      0,
+    );
+
+    expect(result.css).to.contain('.faction-border-LC circle');
+  });
+
+  it('renders mixed-case faction AuC area with correct color, not gray fallback', () => {
+    const factions = factionMap([
+      ['AuC', 'Aurigan Coalition', '#DB472D'],
+    ]);
+
+    // Border loops arrive as raw AuC (from generate-border-edges syntheticPoint),
+    // while systemsByFaction may be normalized to AUC via pairing.
+    // Both must resolve to #DB472D, not #999999 gray.
+    const result = renderBorderLoops(
+      { AuC: [loop('AuC')] },
+      factions,
+      new Map(),
+      'light',
+      true,
+      '',
+      [system('s1', 0, 0, 1, 'AuC')],
+      0,
+    );
+
+    expect(result.css).to.contain('#DB472D');
+    expect(result.css).not.to.contain('#999999');
+    expect(result.markup).to.contain('faction-border-AUC');
   });
 });
 

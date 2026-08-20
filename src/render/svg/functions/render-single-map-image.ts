@@ -38,7 +38,6 @@ export function renderSingleMapImage(
   systems: Array<System>,
   focusedSystem?: System,
   debugObjects?: Partial<VoronoiResult>,
-  enabledEras?: number[],
 ) {
   const theme = generatorConfig.theme || 'light';
   const templatePath = path.join(__dirname, '../templates/', theme);
@@ -60,7 +59,6 @@ export function renderSingleMapImage(
         systems,
         focusedSystem,
         !!generatorConfig.debugMode ? debugObjects : undefined,
-        enabledEras,
       )
     ),
     ...(generatorConfig.overlays || []).map((overlay) =>

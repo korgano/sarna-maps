@@ -154,11 +154,12 @@ export async function calculateVoronoiBorders(
     }
 
     // generate control points for each border section separately
+    const tension = controlPointTension;
     hierarchyLevel.borderSections.forEach((borderSection) => {
-      generateEdgeControlPointsForSection(borderSection, hierarchyLevel.threeWayNodes, edgeMap);
+      generateEdgeControlPointsForSection(borderSection, hierarchyLevel.threeWayNodes, edgeMap, tension);
     });
     borderSectionsForLoops.forEach((borderSection) => {
-      generateEdgeControlPointsForSection(borderSection, hierarchyLevel.threeWayNodes, edgeMap);
+      generateEdgeControlPointsForSection(borderSection, hierarchyLevel.threeWayNodes, edgeMap, tension);
     });
 
     // create edge loops for each entity in this hierarchy level

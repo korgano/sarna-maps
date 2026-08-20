@@ -147,7 +147,8 @@ export function placeRegionLabels(
  */
 function extractRegionName(regionKey: string, levelIndex: number): string | null {
   const parts = regionKey.split(',');
-  if (parts.length <= levelIndex) return null;
+  if (parts.length === 0) return null;
+  if (parts.length <= levelIndex) return parts[parts.length - 1]?.trim() || null;
   const name = parts[levelIndex]?.trim();
   return name || null;
 }

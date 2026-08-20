@@ -1,5 +1,5 @@
 import { BorderDelaunayVertex, BorderSection, VoronoiBorderEdge, VoronoiBorderNode } from '../../types';
-import { logger, pointIsLeftOfLine, logPipelinePhase, PipelineStage } from '../../../../common';
+import { logger, pointIsLeftOfLine } from '../../../../common';
 import { reverseEdges } from './reverse-edges';
 import { ensureEdgeLoopClockwiseOrder } from '../ensure-edge-loop-clockwise-order';
 import { coordKey } from './node-coord-key';
@@ -109,7 +109,7 @@ export function buildFactionLoops(
     })),
   }));
 
-  logPipelinePhase(PipelineStage.LOOP_BUILD, `Building loops for ${faction}: ${factionSections.length} sections`);
+  logger.debug('build-faction-loops.ts', `Building loops for ${faction}: ${factionSections.length} sections`);
 
   const loops: Array<BorderSection> = [];
 
