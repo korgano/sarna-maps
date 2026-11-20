@@ -1,5 +1,6 @@
 import { BorderSection, BorderDelaunayVertex } from '../../types';
 import { distance, nearestPointOnLineSegment, scaleVector } from '../../../../common';
+import { isDisputedZoneEdge } from '../../../../common/utils/disputed-affiliation';
 import { updateEdgeValues } from '../utils';
 
 /**
@@ -23,6 +24,10 @@ export function relaxBorderSection(
     const edge2 = section.edges[i + 1];
     // if node in question is a three way node (border between 3 or more factions), do not move it
     if (Object.keys(edge1.node2.borderAffiliations).length > 2) {
+      continue;
+    }
+    // if the edge is part of a disputed zone boundary, do not relax it
+    if (isDisputedZoneEdge(edge1) || isDisputedZoneEdge(edge2)) {
       continue;
     }
     const startPoint = edge1.node1;

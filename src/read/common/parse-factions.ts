@@ -1,5 +1,7 @@
 import { Faction, logger } from '../../common';
 import { traceFaction } from '../../common/utils/faction-traversal-logger';
+import { CsvError, CsvErrorCodes } from './csv-parser';
+import { sanitizeCssColor } from '../../common/utils/sanitize-css-color';
 
 function findHeaderRow(rows: Array<Array<string>>): number {
   for (let rowIndex = 0; rowIndex < Math.min(rows.length, 5); rowIndex++) {
@@ -49,10 +51,13 @@ export function parseFactions(rows: Array<Array<string>>): Array<Faction> {
     if (key === 'endyear') columnIndexMap['endyear'] = columnIndex;
   });
 
-  const requiredColumns = ['factionid', 'factionname', 'color', 'startyear', 'endyear'];
+  const requiredColumns = ['factionid', 'factionname', 'color'];
   const missingColumns = requiredColumns.filter(col => columnIndexMap[col] === undefined);
   if (missingColumns.length > 0) {
-    logger.warn('parse-factions.ts', `Missing required columns: ${missingColumns.join(', ')}`);
+    throw new CsvError(
+      CsvErrorCodes.HEADER_VALIDATION_FAILED,
+      `Missing required faction columns: ${missingColumns.join(', ')}. Add these columns to your factions CSV.`
+    );
   }
   traceFaction('src/read/common/parse-factions.ts', 'column-headers',
     `found=${Object.keys(columnIndexMap).join(',')}, missing=${missingColumns.join(',')}`);
@@ -69,10 +74,17 @@ export function parseFactions(rows: Array<Array<string>>): Array<Faction> {
 
     traceFaction('src/read/common/parse-factions.ts', 'raw-input', rawId);
 
-    const normalizedId = rawId.toString();
+    const rawIdStr = rawId.toString().trim();
+    // Minimal normalization: only the "(X)" sentinel needs to become "X" for v1/v3 compatibility.
+    // Preserve original casing for mixed-case IDs like "AuC" (test expects AuC, and factionMap dual-key handles lookup).
+    // Full upper-fold normalization is done at pairing/render time via normalizeFactionKey/canonicalAffiliation.
+    let normalizedId = rawIdStr;
+    if (/^\(X\)$/i.test(rawIdStr)) {
+      normalizedId = 'X';
+    }
 
     const name = row[columnIndexMap['factionname']] ?? '';
-    const color = row[columnIndexMap['color']] ?? '';
+    const color = sanitizeCssColor(row[columnIndexMap['color']] ?? '');
     const foundingRaw = row[columnIndexMap['startyear']] ?? '';
     const dissolutionRaw = row[columnIndexMap['endyear']] ?? '';
 
@@ -91,6 +103,37 @@ export function parseFactions(rows: Array<Array<string>>): Array<Faction> {
 
     factions.push(faction);
 
+  }
+
+  // Deduplicate by normalized (upper) key — preserves original normalizeFactionKey upper-folding
+  // but prevents case-variant duplicates (AuC/AUC) from creating duplicate faction entries
+  // that cause retain-faction-affiliation-pairing multipleMatches and border fragmentation.
+  const seen = new Map<string, Faction>();
+  const deduped: Faction[] = [];
+  const duplicateIds: string[] = [];
+  for (const f of factions) {
+    const upper = f.id.toUpperCase();
+    if (!seen.has(upper)) {
+      seen.set(upper, f);
+      deduped.push(f);
+    } else {
+      // Keep the first occurrence; log the duplicate for diagnostics (debug to avoid noise on expected singletons)
+      if (!duplicateIds.includes(upper)) duplicateIds.push(upper);
+      traceFaction('src/read/common/parse-factions.ts', 'duplicate-skipped', `${f.id} duplicates ${upper} (keeping ${seen.get(upper)!.id})`);
+    }
+  }
+  if (duplicateIds.length > 0) {
+    logger.warn('parse-factions.ts', `Duplicate faction IDs detected (case-insensitive, normalized): ${duplicateIds.join(', ')} — deduplicated to single canonical entry`);
+  }
+  factions.length = 0;
+  factions.push(...deduped);
+
+  // Invariant: every deduped faction maps to a unique upper-case key.
+  // This ensures the dual-key factionMap in main.ts (id + id.toUpperCase())
+  // won't produce phantom entries.
+  const uniqueUpperKeys = new Set(deduped.map(f => f.id.toUpperCase()));
+  if (uniqueUpperKeys.size !== deduped.length) {
+    logger.warn('parse-factions.ts', `Invariant violation: ${deduped.length} deduped factions but only ${uniqueUpperKeys.size} unique upper-case keys`);
   }
 
   factions.forEach((faction) => {

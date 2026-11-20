@@ -80,6 +80,22 @@ describe('parseFactions v1 format', () => {
     expect(factions[0].dissolution).to.be.undefined;
   });
 
+  it('should deduplicate case-insensitive faction IDs (AuC/AUC)', () => {
+    const rows: Array<Array<string>> = [
+      ['factionid', 'factionname', 'color', 'startyear', 'endyear'],
+      ['AuC', 'Aurigan Coalition', '#DB472D', '2910', ''],
+      ['AUC', 'Aurigan Coalition Dup', '#FF0000', '2910', ''],
+      ['LC', 'Lyran Commonwealth', '#1861A3', '2341', ''],
+    ];
+
+    const factions = parseFactions(rows);
+
+    expect(factions).to.have.length(2);
+    expect(factions[0].id).to.equal('AuC');
+    expect(factions[0].name).to.equal('Aurigan Coalition');
+    expect(factions[1].id).to.equal('LC');
+  });
+
   it('should parse v1 spreadsheet format with comma separators', () => {
     const rows: Array<Array<string>> = [
       ['factionid', 'factionname', 'color', 'startyear', 'endyear', 'https://www.sarna.net/wiki/ComStar'],

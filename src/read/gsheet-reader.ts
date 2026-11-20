@@ -1,6 +1,7 @@
 import { sheets_v4 } from 'googleapis';
-import { parseEras, parseFactions, parseSystems } from './common';
-import { DataSourceConfig } from '../common';
+import { parseEras, parseFactions, parseSystems, parseSystemsV3Csv } from './common';
+import { buildFactionAffiliationPairs, clearPairingCache } from './common/retain-faction-affiliation-pairing';
+import { DataSourceConfig, FactionRegistry } from '../common';
 
 export async function readFromGoogleSheet(dataSourceConfig: DataSourceConfig) {
   const sheetsClient = new sheets_v4.Sheets({ auth: dataSourceConfig.googleSheetsConfig?.apiKey || '' });
@@ -32,12 +33,20 @@ export async function readFromGoogleSheet(dataSourceConfig: DataSourceConfig) {
   );
 
   const eras = parseEras(dataRanges[0].values as unknown as Array<Array<string>>);
+  const factions = parseFactions(dataRanges[1].values as unknown as Array<Array<string>>);
 
-  return {
-    eras,
-    factions: parseFactions(dataRanges[1].values as unknown as Array<Array<string>>),
-    systems: parseSystems(dataRanges[2].values as unknown as Array<Array<string>>, eras),
-  };
+  // Stage 1 — unified ingestion (same chain as the CSV reader).
+  const systems = parseSystems(dataRanges[2].values as unknown as Array<Array<string>>, eras);
+
+  // Stages 2 + 3 — enrichment, then pairing, built once across all eras.
+  const factionRegistry = new FactionRegistry();
+  factionRegistry.registerAll(factions);
+
+  clearPairingCache();
+  parseSystemsV3Csv(systems, eras, { factionRegistry });
+  const pairs = buildFactionAffiliationPairs(systems, factionRegistry, eras);
+
+  return { eras, factions, systems, pairs };
 }
 
 /**

@@ -1,7 +1,7 @@
 import { BorderLabelCandidate } from "../types";
 import { BorderEdgeLoop } from '../../voronoi-border';
 import { BorderLabelConfig, BorderLabelVariant, logger, RectangleGrid } from '../../../common';
-import { calculateCandidateLoopOverlap } from './calculate-candidate-loop-overlap';
+import { calculateCandidateLoopOverlap, precomputeEdgeMidpoints } from './calculate-candidate-loop-overlap';
 import { calculateCandidateLabelOverlap } from './calculate-candidate-label-overlap';
 
 /**
@@ -20,6 +20,10 @@ export function scoreLabelCandidates(
   grid: RectangleGrid,
   borderLabelConfig: BorderLabelConfig,
 ) {
+  if (candidates.length === 0) {
+    return;
+  }
+
   // normalize the configured weights so that they sum to 1
   const weightsSum = Object.values(borderLabelConfig.scoreWeights)
     .reduce((sum, currentValue) => sum + currentValue, 0);
@@ -28,29 +32,32 @@ export function scoreLabelCandidates(
     (key: keyof typeof normalizedWeights) => normalizedWeights[key] = normalizedWeights[key] / weightsSum,
   );
 
-  // find the maximum area that candidates can overlap
+  // find the maximum area that candidates can overlap (only first 3 candidates as reference)
   const maximumLabelOverlapArea = candidates.slice(0, 3)
-    .map((candidate) => candidate.labelArea)
-    .reduce((max, currentValue) => Math.max(max, currentValue), 0);
+    .reduce((max, c) => Math.max(max, c.labelArea), 0);
 
   const maximumLoopOverlap = candidates.slice(0, 3)
-    .map((candidate) => candidate.borderSectionStraightness)
-    .reduce((max, currentValue) => Math.max(max, currentValue), 0);
+    .reduce((max, c) => Math.max(max, c.borderSectionStraightness), 0);
 
-  const maximumStraightness = candidates
-    .map((candidate) => candidate.borderSectionStraightness)
-    .reduce((max, currentValue) => Math.max(max, currentValue), 0);
+  // compute maximum straightness with a single pass (no intermediate array allocation)
+  let maximumStraightness = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    if (candidates[i].borderSectionStraightness > maximumStraightness) {
+      maximumStraightness = candidates[i].borderSectionStraightness;
+    }
+  }
+
+  // Precompute edge midpoints once for the entire loop (avoids per-candidate allocation)
+  const edgeMidpoints = precomputeEdgeMidpoints(loop);
 
   candidates.forEach((candidate) => {
     // determine whether the candidate overlaps any loop edges, and by how much approximately
-    calculateCandidateLoopOverlap(candidate, loop);
-    // find overlaps with any existing objects or labels, and add up the overlapping areas
-    calculateCandidateLabelOverlap(candidate, grid);
-    // prepare the candidate object for debugging info
-    candidate.scoreComponents = {
-      weighted: {},
-      unweighted: {},
-    };
+    calculateCandidateLoopOverlap(candidate, loop, borderLabelConfig.rules.maxBorderIntersectionDistance, edgeMidpoints);
+
+    // Skip expensive label overlap calculation if already disqualified by border intersection
+    if ((candidate.loopOverlapDistance || 0) <= borderLabelConfig.rules.maxBorderIntersectionDistance) {
+      calculateCandidateLabelOverlap(candidate, grid);
+    }
 
     // at this point, our candidate contains all necessary information to score it
     // rate the overlap area
@@ -58,9 +65,7 @@ export function scoreLabelCandidates(
       1,
       8 * (candidate.labelOverlapArea || 0) / maximumLabelOverlapArea, // TODO magic number
     );
-    candidate.scoreComponents.unweighted['labelOverlap'] = overlapRating;
     overlapRating *= normalizedWeights.labelOverlap;
-    candidate.scoreComponents.weighted['labelOverlap'] = overlapRating;
     if ((candidate.labelOverlapArea || 0) > borderLabelConfig.rules.maxLabelOverlapArea) {
       candidate.disqualified = true;
       candidate.disqualificationReason = `label overlap (${candidate.labelOverlapArea})`;
@@ -74,15 +79,11 @@ export function scoreLabelCandidates(
     let angleRating = simplifiedAngle <= 45
       ? -simplifiedAngle/45 + 1
       : (simplifiedAngle - 45) * 0.75 / 45;
-    candidate.scoreComponents.unweighted['angle'] = angleRating;
     angleRating *= normalizedWeights.angle;
-    candidate.scoreComponents.weighted['angle'] = angleRating;
 
     // rate the straightness
     let straightnessRating = 1 - candidate.borderSectionStraightness / maximumStraightness;
-    candidate.scoreComponents.unweighted['straightness'] = straightnessRating;
     straightnessRating *= normalizedWeights.straightness;
-    candidate.scoreComponents.weighted['straightness'] = straightnessRating;
 
     // rate the border intersection distance
     let borderIntersectionRating =
@@ -90,42 +91,31 @@ export function scoreLabelCandidates(
         ? 1
         : Math.max(0, 1 - 5 * (candidate.loopOverlapDistance || 0) / maximumLoopOverlap // TODO magic number (factor)
     );
-    candidate.scoreComponents.unweighted['borderIntersection'] = borderIntersectionRating;
     borderIntersectionRating *= normalizedWeights.borderIntersection;
-    candidate.scoreComponents.weighted['borderIntersection'] = borderIntersectionRating;
     if ((candidate.loopOverlapDistance || 0) > borderLabelConfig.rules.maxBorderIntersectionDistance) {
       candidate.disqualified = true;
       candidate.disqualificationReason = `border intersection (${candidate.loopOverlapDistance})`;
     }
 
     // rate the centeredness
-    let centerednessRating = candidate.centeredness;
-    candidate.scoreComponents.unweighted['centeredness'] = centerednessRating;
-    centerednessRating *= normalizedWeights.centeredness;
-    candidate.scoreComponents.weighted['centeredness'] = centerednessRating;
+    let centerednessRating = candidate.centeredness * normalizedWeights.centeredness;
 
     // use the previously calculated cornerScore
-    let cornerScoreRating = candidate.cornerScore;
-    candidate.scoreComponents.unweighted['cornerScore'] = cornerScoreRating;
-    cornerScoreRating *= normalizedWeights.cornerScore;
-    candidate.scoreComponents.weighted['cornerScore'] = cornerScoreRating;
+    let cornerScoreRating = candidate.cornerScore * normalizedWeights.cornerScore;
 
-    // rate the multilined-ness (?)
+    // rate the multilined-ness
     let multilineRating = candidate.labelVariant === BorderLabelVariant.MultiLine
       ? 1
       : candidate.labelVariant === BorderLabelVariant.SingleLine
         ? .8
         : 0;
-    candidate.scoreComponents.unweighted['multiline'] = multilineRating;
     multilineRating *= normalizedWeights.multiline;
-    candidate.scoreComponents.weighted['multiline'] = multilineRating;
 
     candidate.score = overlapRating + angleRating + straightnessRating +
       borderIntersectionRating + centerednessRating + cornerScoreRating + multilineRating;
 
     if (candidate.score < 0 || candidate.score > 1) {
       logger.warn(
-        'score-label-candidates.ts',
         'Border label candidate has a score that should be impossible, please check:',
         candidate.id,
         candidate.score,

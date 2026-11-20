@@ -1,4 +1,4 @@
-import { Faction, GlyphConfig, Rectangle2d, RectangleGrid, System, SystemLabelConfig } from '../../common';
+import { GlyphConfig, Rectangle2d, RectangleGrid, System, SystemLabelConfig } from '../../common';
 import { findLabelPosition, initializeLabelItems } from './functions';
 
 /**
@@ -21,7 +21,6 @@ export function placeSystemLabels(
   grid: RectangleGrid,
   glyphSettings: GlyphConfig,
   systemLabelConfig: SystemLabelConfig,
-  factionMap: Record<string, Faction>,
 ) {
   const { labelItems } = initializeLabelItems(
     viewRect,
@@ -30,7 +29,6 @@ export function placeSystemLabels(
     grid,
     glyphSettings,
     systemLabelConfig,
-    factionMap,
   );
 
   // sort label items from right to left

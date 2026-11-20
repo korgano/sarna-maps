@@ -1,5 +1,6 @@
 import { BorderDelaunayVertex, BorderSection } from '../types';
 import { EMPTY_FACTION, INDEPENDENT } from '../../constants';
+import { logger } from '../../../common';
 import { buildFactionLoops } from './utils';
 
 export function generateSimpleBorderLoops(sections: Array<BorderSection>, vertices: Array<BorderDelaunayVertex>) {

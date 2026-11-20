@@ -1,5 +1,5 @@
 import { BorderSection, BorderDelaunayVertex, VoronoiBorderEdge, VoronoiBorderNode } from '../../types';
-import { updateEdgeValues } from '../utils';
+import { replaceEdgeId, updateEdgeValues } from '../utils';
 
 export function subdivideDangerousEdges(
   section: BorderSection,
@@ -27,14 +27,17 @@ export function subdivideDangerousEdges(
         node1: newNode,
         node2: edge.node2,
       }
+      const oldId = edge.id;
       edge.node2 = newNode;
       updateEdgeValues(edge, vertices);
       updateEdgeValues(newEdge, vertices);
       section.edges.splice(edgeIndex + 1, 0, newEdge);
-      if ((threeWayNodes[newEdge.node2.id] || []).includes(edge.id)) {
-        threeWayNodes[newEdge.node2.id] = threeWayNodes[newEdge.node2.id].filter((edgeId) => edgeId !== edge.id);
+      if ((threeWayNodes[newEdge.node2.id] || []).includes(oldId)) {
+        threeWayNodes[newEdge.node2.id] = threeWayNodes[newEdge.node2.id].filter((edgeId) => edgeId !== oldId);
         threeWayNodes[newEdge.node2.id].push(newEdge.id);
       }
+      // Both children remain addressable under the retired id everywhere else.
+      replaceEdgeId(threeWayNodes, oldId, edge.id, newEdge.id);
       numberOfNewEdges++;
     }
   }

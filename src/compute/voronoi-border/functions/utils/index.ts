@@ -1,4 +1,5 @@
 export * from './build-faction-loops';
+export * from './edge-id-registry';
 export * from './reverse-edge-loop';
 export * from './reverse-edges';
 export * from './swap-edge-nodes';

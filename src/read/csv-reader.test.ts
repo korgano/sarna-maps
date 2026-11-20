@@ -73,6 +73,10 @@ describe('csv-reader integration (real TrollMaster v3.5 export)', () => {
     const withAffiliations = data.systems.filter((s) =>
       s.eraAffiliations.some((a) => a && a !== 'U'),
     );
+    // The read pipeline now runs the full chain per read: stage-1 ingestion,
+    // stage-2 enrichment (every system x era) and the stage-3 pairing build
+    // over ALL eras (~150s on this machine for this export; was ~90s when
+    // pairing was built per rendered image). Machine-dependent — see AGENTS.md.
     expect(withAffiliations.length).toBeGreaterThan(0);
-  }, 120000);
+  }, 300000);
 });

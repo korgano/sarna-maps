@@ -1,9 +1,9 @@
 import {
   areaOfRectangleIntersection,
-  canonicalAffiliation,
-  Faction,
+  extractBorderStateAffiliation,
   GlyphConfig,
   IdentifiableRectangle,
+  isAbandonedAffiliation,
   Rectangle2d,
   RectangleGrid,
   System,
@@ -32,35 +32,19 @@ export function initializeLabelItems(
   grid: RectangleGrid,
   glyphSettings: GlyphConfig,
   systemLabelConfig: SystemLabelConfig,
-  factionMap: Record<string, Faction>,
 ) {
   // Create the rectangular system and label items
   const systemItems: Array<IdentifiableRectangle> = [];
   const labelItems: Array<LabelRectangle> = [];
   systems.forEach((system) => {
-    const rawName = system.eraNames[eraIndex];
-    const bracketMatch = rawName.match(/\[\s*([^\]]+)\s*\]/);
-    let systemName = rawName;
-    const bracketAdditions: Array<LabelAddition> = [];
-    if (bracketMatch) {
-      const bracketContent = bracketMatch[1].trim();
-      const isFactionId = !!(factionMap[bracketContent] || factionMap[bracketContent.toUpperCase()]);
-      if (!isFactionId) {
-        bracketAdditions.push({
-          text: bracketContent,
-          class: 'alt-name',
-          delta: { x: 0, y: 0 },
-        });
-        systemName = rawName.replace(/\s*\[\s*[^\]]+\s*\]\s*/, ' ').trim();
-      }
-    }
-    const systemAffiliation = canonicalAffiliation(system.eraAffiliations[eraIndex], {
-      ignoredAffiliations: [''],
-      parseHiddenSystemsAs: 'full',
-      systemId: system.id,
-      eraIndex,
-    });
-    const additions = [...getLabelAdditions(system, systemAffiliation, eraIndex), ...bracketAdditions];
+    const systemName = system.eraNames[eraIndex];
+    const rawAffiliation = system.eraAffiliations[eraIndex];
+    // Abandoned systems keep the abandoned label style even for A(<FACTION>);
+    // the hidden marker suffix is preserved for the hidden label addition.
+    const systemAffiliation = isAbandonedAffiliation(rawAffiliation)
+      ? 'A' + (/\(H\)/i.test(rawAffiliation) ? '(H)' : '')
+      : extractBorderStateAffiliation(rawAffiliation, [''], 'full');
+    const additions = getLabelAdditions(system, systemAffiliation, eraIndex);
     const labelMargin = getLabelMargin(system, eraIndex, systemLabelConfig);
 
     // determine label dimensions
@@ -93,7 +77,7 @@ export function initializeLabelItems(
     };
     const labelItem: LabelRectangle = {
       id: LABEL_ID_PREFIX + system.id,
-      label: systemName,
+      label: system.eraNames[eraIndex],
       anchor: {
         x: system.x,
         y: system.y,

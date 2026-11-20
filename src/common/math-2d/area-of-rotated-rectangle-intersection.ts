@@ -1,5 +1,5 @@
 import { Point2d, Rectangle2d } from './types';
-import { deepCopy, logger } from '../utils';
+import { logger } from '../utils';
 import { pointIsLeftOfLine } from './point-is-left-of-line';
 
 enum SIDE {
@@ -70,7 +70,7 @@ export function areaOfRotatedRectangleIntersection(
     return SIDE.NONE;
   }
 
-  const polygon = [];
+  const polygon: IntermediatePoint2d[] = [];
   for (let i = 0; i < clippedLines.length; i++) {
     if (!clippedLines[i]) {
       clippedLines.splice(i,1);
@@ -127,7 +127,7 @@ export function areaOfRotatedRectangleIntersection(
     // check remaining point count
     if (polygon.length < 2) {
       // something's funky
-      logger.warn('area-of-rotated-rectangle-intersection.ts', 'polygon could not be built with one point');
+      logger.warn('polygon could not be built with one point');
       break;
     }
     // find out if the points lie on any of the rectangle's sides
@@ -155,16 +155,16 @@ export function areaOfRotatedRectangleIntersection(
       iSide = turn(iSide);
       if(iSide === SIDE.RIGHT) {
         j++;
-        polygon.splice(i+j, 0, deepCopy(corners.tr));
+        polygon.splice(i+j, 0, corners.tr);
       } else if (iSide === SIDE.BOTTOM) {
         j++;
-        polygon.splice(i+j, 0, deepCopy(corners.br));
+        polygon.splice(i+j, 0, corners.br);
       } else if (iSide === SIDE.LEFT) {
         j++;
-        polygon.splice(i+j,0, deepCopy(corners.bl));
+        polygon.splice(i+j,0, corners.bl);
       } else if (iSide === SIDE.TOP) {
         j++;
-        polygon.splice(i+j, 0, deepCopy(corners.tl));
+        polygon.splice(i+j, 0, corners.tl);
       }
     } while (iSide !== nextSide && iSide !== curSide);
   }
@@ -201,8 +201,8 @@ function rectLineClip(rect: Rectangle2d, pFrom: Point2d, pTo: Point2d) {
   //logger.log('yMin ' + yMin.toFixed(2) + ', yMax ' + yMax.toFixed(2) );
   //logger.log('pFrom ' + pFrom.x + ',' + pFrom.y);
   //logger.log('pTo ' + pTo.x + ',' + pTo.y);
-  const p0 = deepCopy(pFrom);
-  const p1 = deepCopy(pTo);
+  const p0 = { x: pFrom.x, y: pFrom.y };
+  const p1 = { x: pTo.x, y: pTo.y };
   let x: number;
   let y: number;
   let outcode0: CODE;

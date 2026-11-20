@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { logger, Era } from '../common';
+import { logger, Era, FactionRegistry } from '../common';
 import { parseFactions, parseSystems, parseSystemsV3Csv, SheetData } from './common';
+import { buildFactionAffiliationPairs, clearPairingCache } from './common/retain-faction-affiliation-pairing';
 import { DataSourceConfig } from '../common';
 import { traceFaction } from '../common/utils/faction-traversal-logger';
 import { CsvParser, CsvError, CsvErrorCodes } from './common/csv-parser';
@@ -138,18 +139,29 @@ export async function readFromCsvFiles(
 
     const factions = parseFactions(factionsSheet);
 
-    const systems = isV3
-      ? parseSystemsV3Csv(systemsMatrix, eras)
-      : parseSystems(
-          convertToMatrixFormat(
-            systemsRecords.filter(
-              (row) => row.hasOwnProperty('systemname') && row.hasOwnProperty('x') && row.hasOwnProperty('y'),
-            ),
-          ) as unknown as Array<Array<string>>,
-          eras,
-        );
+    // Stage 1 — unified ingestion: both layouts flow through parseSystems,
+    // which locates the header row by content and stores era cells raw.
+    const systemsInput = isV3
+      ? systemsMatrix
+      : (convertToMatrixFormat(
+          systemsRecords.filter(
+            (row) => row.hasOwnProperty('systemname') && row.hasOwnProperty('x') && row.hasOwnProperty('y'),
+          ),
+        ) as unknown as Array<Array<string>>);
 
-    return { eras, factions, systems };
+    const systems = parseSystems(systemsInput, eras, systemsPath);
+
+    // Stages 2 + 3 — enrichment (per system x era values), then pairing.
+    // Built ONCE here across all eras; the renderer consumes `pairs` as-is
+    // instead of rebuilding them per image.
+    const factionRegistry = new FactionRegistry();
+    factionRegistry.registerAll(factions);
+
+    clearPairingCache();
+    parseSystemsV3Csv(systems, eras, { factionRegistry });
+    const pairs = buildFactionAffiliationPairs(systems, factionRegistry, eras);
+
+    return { eras, factions, systems, pairs };
   } catch (error) {
     if (error instanceof CsvError) {
       logger.error('csv-reader.ts', `CSV Error: ${error.message}`, error);
@@ -271,6 +283,7 @@ function discoverFactionsFile(systemsPath: string): string | null {
   ];
 
   for (const pattern of patterns) {
+    if (pattern === baseName) continue; // skip patterns that didn't change the filename
     const factionsPath = path.join(baseDir, pattern);
     try {
       if (fs.existsSync(factionsPath)) {

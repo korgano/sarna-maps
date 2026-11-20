@@ -1,23 +1,24 @@
 import {
   BorderLabelConfig,
   Era,
-  Faction,
+  FactionRegistry,
   GeneratorConfig,
   GlyphConfig,
   logger,
   System,
   SystemLabelConfig
 } from '../../common';
+import { FactionAffiliationPair } from '../../read/common/retain-faction-affiliation-pairing';
 import { determineOutputFilePath, renderSingleMapImage } from './functions';
 import path from 'path';
 import fs from 'fs';
 import { UNIVERSE_RECT } from '../../Constants';
+import { setActiveEras } from '../../common/utils/faction-traversal-logger';
 import {
   calculateVoronoiBorders,
   VoronoiResult,
   VoronoiResultHierarchyLevel
 } from '../../compute';
-import { buildFactionAffiliationPairs, FactionAffiliationPair } from '../../read/common/retain-faction-affiliation-pairing';
 
 export async function writeSvgMaps(
   generatorConfig: GeneratorConfig,
@@ -25,15 +26,11 @@ export async function writeSvgMaps(
   systemLabelConfig: SystemLabelConfig,
   borderLabelConfig: BorderLabelConfig,
   eras: Array<Era>,
-  factionMap: Record<string, Faction>,
+  factionRegistry: FactionRegistry,
   systems: Array<System>,
+  // Prebuilt ONCE in the read pipeline across all eras — see SheetData.pairs.
+  pairs: Map<string, FactionAffiliationPair>,
 ) {
-  // Build faction affiliation pairs for the render pipeline
-  const pairs: Map<string, FactionAffiliationPair> = buildFactionAffiliationPairs(
-    systems,
-    Object.values(factionMap),
-    eras,
-  );
   const globalConfigs = {
     glyphConfig,
     systemLabelConfig,
@@ -43,6 +40,9 @@ export async function writeSvgMaps(
   const erasToIterateOver = eras.filter((era) =>
     !generatorConfig.eras || generatorConfig.eras.length === 0 || generatorConfig.eras.includes(era.index)
   );
+
+  // Limit faction-traversal-log output to the eras specified in the active config
+  setActiveEras(erasToIterateOver.map((e) => e.index));
 
   let objectsToIterateOver: Array<System> | null = null;
   if (generatorConfig.iterateObjects?.type === 'system') {
@@ -65,16 +65,7 @@ export async function writeSvgMaps(
 
     // Perform voronoi border calculations
     const {
-      // poissonDisc,
-      // delaunayTriangles,
-      // delaunayVertices,
-      // voronoiNodes,
-      // unmodifiedBorderEdges,
-      // borderEdges,
-      // borderSections,
       affiliationLevelSections,
-      // threeWayNodes,
-      salientPoints,
     } = await calculateVoronoiBorders(
       systems,
       era,
@@ -92,34 +83,28 @@ export async function writeSvgMaps(
           generatorConfig,
           globalConfigs,
           era,
-          factionMap,
+          factionRegistry,
           pairs,
           affiliationLevelSections || [],
           systems,
           system,
           systemIndex,
-          {
-            salientPoints,
-          },
         );
       });
     } else if (objectsToIterateOver) {
-      logger.warn('write-svg-maps.ts', `Pattern "${generatorConfig.iterateObjects?.pattern}" does not match any systems. No map images will be created.`);
+      logger.warn(`Pattern "${generatorConfig.iterateObjects?.pattern}" does not match any systems. No map images will be created.`);
     } else {
       // no objects to iterate over - create just one map image per era
       generateAndSaveSingleMapImage(
         generatorConfig,
         globalConfigs,
         era,
-        factionMap,
+        factionRegistry,
         pairs,
         affiliationLevelSections || [],
         systems,
         undefined,
         undefined,
-        {
-          salientPoints,
-        },
       );
     }
   }
@@ -132,9 +117,10 @@ export async function writeSvgMaps(
  * @param config The generator configuration
  * @param globalConfigs The globally defined configuration objects
  * @param era The selected era for the map image
- * @param factionMap The map of all factions
- * @param pairs The faction affiliation pairs map for render pipeline
+ * @param factionRegistry The canonical, case-insensitive faction registry
+ * @param pairs The prebuilt system x era affiliation pairs (all eras)
  * @param affiliationLevelSections The border result sections for each hierarchy
+ // * @param borderLoops The map of all border loops, by faction
  * @param systems The list of all systems
  * @param focusedSystem The focused system for the map image, if applicable
  * @param focusedSystemIndex The focused system's index, if applicable
@@ -148,7 +134,7 @@ function generateAndSaveSingleMapImage(
     borderLabelConfig: BorderLabelConfig;
   },
   era: Era,
-  factionMap: Record<string, Faction>,
+  factionRegistry: FactionRegistry,
   pairs: Map<string, FactionAffiliationPair>,
   affiliationLevelSections: Array<VoronoiResultHierarchyLevel>,
   systems: Array<System>,
@@ -168,7 +154,7 @@ function generateAndSaveSingleMapImage(
     config,
     globalConfigs,
     era,
-    factionMap,
+    factionRegistry,
     pairs,
     affiliationLevelSections,
     systems,

@@ -1,7 +1,6 @@
 import path from 'path';
 import { hslToRgb, rgbToHsl, TextTemplate } from '../../../common';
 import { FactionLabel } from '../../../compute';
-import { traceFaction } from '../../../common/utils/faction-traversal-logger';
 
 export function renderFactionLabels(factionLabels: Array<FactionLabel>, theme: 'light' | 'dark') {
   const templatePath = path.join(__dirname, '../templates/', theme);
@@ -14,12 +13,6 @@ export function renderFactionLabels(factionLabels: Array<FactionLabel>, theme: '
   let defs = '';
   let markup = '';
   let css = '';
-
-  traceFaction(
-  'src/render/svg/functions/render-faction-labels.ts',
-  'render-label',
-  factionLabels
-  );
 
   factionLabels.forEach((factionLabel) => {
     let d = '';

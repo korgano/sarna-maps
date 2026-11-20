@@ -35,9 +35,5 @@ export function calculateCandidateLabelOverlap(candidate: BorderLabelCandidate, 
   overlaps.forEach((overlap) => {
     const intersectionResult = areaOfRotatedRectangleIntersection(overlap, candidate.rect);
     candidate.labelOverlapArea = (candidate.labelOverlapArea || 0) + areaOfPolygon(intersectionResult.p);
-    if (candidate.labelOverlapArea > 0) {
-      candidate.overlapPolygons = candidate.overlapPolygons || [];
-      candidate.overlapPolygons.push(intersectionResult.p);
-    }
   });
 }

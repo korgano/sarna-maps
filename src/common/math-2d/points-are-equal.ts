@@ -1,12 +1,20 @@
 import { Point2d } from './types';
 
+const DEFAULT_TOLERANCE = 1e-9;
+
 /**
- * Checks for point equality.
- *
- * @param p1 The first point
- * @param p2 The second point
- * @returns true if the points are equal (euclidean distance is 0)
-  */
+ * Returns true if two points are within `tolerance` map units
+ * using Euclidean distance.
+ */
+export function pointsAreClose(p1: Point2d, p2: Point2d, tolerance: number): boolean {
+  const dx = p1.x - p2.x;
+  const dy = p1.y - p2.y;
+  return (dx * dx + dy * dy) <= (tolerance * tolerance);
+}
+
+/**
+ * Checks for point equality using a very small default tolerance.
+ */
 export function pointsAreEqual(p1: Point2d, p2: Point2d): boolean {
-  return p1.x === p2.x && p1.y === p2.y;
+  return pointsAreClose(p1, p2, DEFAULT_TOLERANCE);
 }

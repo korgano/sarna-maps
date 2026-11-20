@@ -1,1 +1,0 @@
-g.regional-borders.level-{{LEVEL}} .border-section { fill: none; stroke: #ddd; stroke-width: {{STROKEWIDTH}}; {{STROKESTYLE}} }

@@ -1,224 +1,182 @@
-import { parseSingleSystem, SystemRow } from './parse-single-system';
-import { Era, logger, System } from '../../common';
+import { Era, FactionRegistry, System } from '../../common';
+import { getAbandonedBorderFaction } from '../../common/utils/abandoned-affiliation';
 import { traceFaction } from '../../common/utils/faction-traversal-logger';
+import { setCacheEntry } from './retain-faction-affiliation-pairing';
 
-/**
- * Capital-level tokens used by v3 `|` delimited affiliation strings.
- *
- * A v3 system affiliation is a *variable-length*, pipe-delimited string. The
- * capital descriptor is always the FINAL token whenever a capital is present,
- * but the total number of tokens is not fixed:
- *
- *   2 tokens:  `AuC|National Capital`              (faction + capital)
- *   3 tokens:  `FWL|Duchy of Tamarind|Region Capital` (faction + district + capital)
- *   4 tokens:  `DC|Pesht Military District|Kagoshima Prefecture|National Capital`
- *   5 tokens:  `FCL|Donegal March|Alarion Operational Area|Region 1|District Capital`
- *
- * When no capital is present the final token is the region instead
- * (e.g. `FS|Crucis March|New Avalon`). Because the number of leading tokens
- * (district / operational area / prefecture) is unbounded, the capital level
- * must be detected by membership in this closed vocabulary, never by a fixed
- * column index.
- *
- * The numeric level mirrors the v1 scale used downstream (1 = highest
- * prominence through 3 = lowest), folding the additional v3 descriptors into
- * the closest existing tier so rendering stays consistent.
- */
-const V3_CAPITAL_LEVELS: Record<string, number> = {
-  'national capital': 1,
-  'faction capital': 1,
-  'major capital': 2,
-  'minor capital': 3,
-  'district capital': 3,
-  'region capital': 3,
-};
+const FILE_NAME = 'parse-systems-v3-csv.ts';
 
-/**
- * Reads a v3 system affiliation string and returns the capital level and
- * region extracted from its `|` delimited tokens.
- *
- * The capital level is taken from the final token only when that token is a
- * known capital descriptor; otherwise the trailing token is treated as the
- * region and the capital level is 0. The region is the token immediately
- * preceding a detected capital descriptor, or the final token when no capital
- * is present.
- *
- * @returns the numeric capital level (0 when none) and the region token, if present.
- */
-export function parseV3CapitalAndRegion(affiliation: string): { capitalLevel: number; region: string } {
-  if (!affiliation || affiliation.trim() === '') {
-    return { capitalLevel: 0, region: '' };
-  }
+export interface ParsedYearCell {
+  /** First hierarchy token — the faction (or `A`/`U`/`D` state marker). */
+  nation: string;
+  /** Parenthetical content of the first token (`A(CFG)` -> `CFG`). */
+  attribute: string;
+  /** Second hierarchy token (district level). Parsed but NOT currently used in map generation — reserved for future hierarchy levels. */
+  district: string;
+  /** Third hierarchy token (region level). Parsed but NOT currently used in map generation — reserved for future hierarchy levels. */
+  region: string;
+  /** Fourth hierarchy token (zone level). Parsed but NOT currently used in map generation — reserved for future hierarchy levels. */
+  zone: string;
+  /** Fifth hierarchy token (capital qualifier). Parsed but NOT currently used in map generation — reserved for future hierarchy levels. */
+  capital: string;
+}
 
-  const parts = affiliation.split('|').map((token) => token.trim()).filter(Boolean);
-  if (parts.length <= 1) {
-    // The unaffiliated sentinel ("U") and bare single tokens carry no region
-    // or capital information.
-    return { capitalLevel: 0, region: '' };
-  }
-
-  const lastToken = parts[parts.length - 1];
-  const capitalLevel = V3_CAPITAL_LEVELS[lastToken.toLowerCase()] ?? 0;
-
-  if (capitalLevel > 0) {
-    // Capital descriptor is the trailing token; the region is the token before
-    // it (only present when the string has at least three tokens). For a
-    // 2-token affiliation like `AuC|National Capital` the first token is the
-    // faction, so there is no separate region.
-    const region = parts.length >= 3 ? parts[parts.length - 2] : '';
-    return { capitalLevel, region };
-  }
-
-  // No capital descriptor: the trailing token is the region itself.
-  return { capitalLevel: 0, region: lastToken };
+export interface EnrichmentOptions {
+  factionRegistry?: FactionRegistry;
+  visibilityOverride?: { hideAbandoned?: boolean; hideUndiscovered?: boolean };
 }
 
 /**
- * CSV-compatible parser for the v3 spreadsheet export.
- *
- * Expects a matrix (string[][]) where the first row is the header and every
- * subsequent row is a system. Era columns are identified by their year-named
- * headers (e.g. "2271", "3050a"); their order defines the era index.
+ * Splits an era cell into its hierarchy tokens. v3 separates tokens with
+ * `|`, v1 with `,`; separators *inside* parentheses (`D(LC,DC)`) belong to
+ * the token, not the hierarchy, so the split is paren-aware.
  */
-export function parseSystemsV3Csv(rows: Array<Array<string>>, eras: Array<Era>): Array<System> {
-  const HEADER_ROW_INDEX = 0;
-  const systems: Array<System> = [];
+function splitHierarchy(cell: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let depth = 0;
 
-  logger.info('Reading systems CSV (v3 format) from Export sheet ...');
-  traceFaction('src/read/common/parse-systems-v3-csv.ts', 'init', `startParsingSystemsV3CSV totalRows=${rows ? rows.length : 0}`);
+  for (const char of cell) {
+    if (char === '(') depth++;
+    else if (char === ')') depth = Math.max(0, depth - 1);
 
-  if (!rows || rows.length <= 1) {
-    logger.info('Exports sheet CSV empty, no systems read.');
-    traceFaction('src/read/common/parse-systems-v3-csv.ts', 'emptySheet', 'noRowsToParse');
-    return [];
+    if ((char === '|' || char === ',') && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  parts.push(current.trim());
+
+  return parts.filter((part) => part !== '');
+}
+
+/**
+ * Parses one era cell into its hierarchy vocabulary. Handles both source
+ * dialects: v3 (`CJF|Tamar Pact|Tamar Domains`, `A(CFG)`, `D(CJF/LC)`) and
+ * v1 (`FS,Crucis March,New Avalon`, `D(LC,DC)`).
+ *
+ * NOTE: this reads the FIRST token only. The border-seeding affiliation —
+ * which must keep the full tail for multi-level borders — is computed
+ * separately by `borderSeedingAffiliation`.
+ */
+export function parseYearCell(cell: string): ParsedYearCell {
+  const emptyResult: ParsedYearCell = { nation: '', attribute: '', district: '', region: '', zone: '', capital: '' };
+  if (!cell || cell.trim() === '') return emptyResult;
+
+  const parts = splitHierarchy(cell);
+  if (parts.length === 0) return emptyResult;
+
+  const pos1 = parts[0];
+  const district = parts[1] || '';
+  const region = parts[2] || '';
+  const zone = parts[3] || '';
+  const capital = parts[4] || '';
+
+  let nation = pos1;
+  let attribute = '';
+
+  const parenMatch = pos1.match(/^([A-Za-z0-9]+)\(([^)]+)\)$/);
+  if (parenMatch) {
+    nation = parenMatch[1];
+    attribute = parenMatch[2];
   }
 
-  const headerRow = rows[HEADER_ROW_INDEX];
+  return { nation, attribute, district, region, zone, capital };
+}
 
-  // Map a normalized header name -> column index.
-  const columnIndexMap: Record<string, number> = {};
-  headerRow.forEach((rawHeader, index) => {
-    const key = (rawHeader ?? '').toString().trim().toLowerCase();
-    if (key) columnIndexMap[key] = index;
-  });
+/**
+ * The affiliation a system seeds the Voronoi/border computation with: the raw
+ * cell with a leading `A(<FACTION>)` unwrapped to `<FACTION>`, so an abandoned
+ * system joins its faction's borders (bare `A` and hidden `A(H)` stay as
+ * written — they are filtered out downstream).
+ *
+ * The hierarchy tail after the first token is preserved verbatim:
+ * multi-level border configs read level-2/3 affiliations off
+ * `point.affiliation`, and a bare faction key would collapse them.
+ */
+export function borderSeedingAffiliation(raw: string): string {
+  const cell = raw.trim();
+  if (!getAbandonedBorderFaction(cell)) return cell;
+  return cell.replace(/^A\s*\(([^)]+)\)/i, '$1');
+}
 
-  // Fall back to the canonical v3 column positions when headers are missing.
-  const canonical: Record<string, number> = {
-    systemid: 0,
-    systemname: 1,
-    x: 2,
-    y: 3,
-    size: 4,
-    visible: 5,
-    height: 6,
-    borderid: 7,
-    nation: 8,
-    district: 9,
-    region: 10,
-    zone: 11,
-    capital: 11,
-    attribute: 12,
-    factioncolor: 13,
-  };
-  for (const [name, index] of Object.entries(canonical)) {
-    if (columnIndexMap[name] === undefined && index < headerRow.length) {
-      columnIndexMap[name] = index;
+/** Visibility of a system's dot for a cell, given optional config overrides. */
+export function computeVisibility(
+  nation: string,
+  visibilityOverride: { hideAbandoned?: boolean; hideUndiscovered?: boolean },
+): boolean {
+  if (nation === 'A' && visibilityOverride.hideAbandoned) return false;
+  if (nation === 'U' && visibilityOverride.hideUndiscovered) return false;
+  return true;
+}
+
+/** Resolves a faction's color for a nation key; unknown factions get black. */
+export function resolveFactionColor(nation: string, factions: FactionRegistry): string {
+  const faction = factions.get(nation);
+  return (faction && faction.color) ? faction.color : '#000000';
+}
+
+/**
+ * Stage 2 of the read pipeline: enrichment.
+ *
+ * Walks every system x era of the already-ingested `System[]` (stage 1,
+ * `parseSystems`) and records the derived per-cell values — border-seeding
+ * affiliation, faction color, visibility, attribute — into the enrichment
+ * cache. Stage 3 (`buildFactionAffiliationPairs`) and the Voronoi pass read
+ * them back through `getCacheEntry*`.
+ *
+ * DATA FLOW (read → compute → render):
+ *   1. parseSystems (stage 1) stores raw era cells in System.eraAffiliations[]
+ *   2. parseSystemsV3Csv (stage 2, this function) reads each raw cell, derives
+ *      nation/borderID/factionColor/visible/attribute, and caches them by
+ *      "${system.id}_${era.index}"
+ *   3. buildFactionAffiliationPairs (stage 3) reads the cache into each
+ *      FactionAffiliationPair, returned in SheetData.pairs
+ *   4. calculateVoronoiBorders (compute) reads getCacheEntryBorderID() to seed
+ *      Voronoi points — A(<FACTION>) systems seed as <FACTION>, bare A is
+ *      filtered out
+ *   5. renderMapLayer (render) reads getCacheEntryBorderID() for systemsByFaction
+ *      grouping, so render and compute agree on faction membership
+ *
+ * Runs for every source (v3 export, legacy CSV, Google Sheets): the cell
+ * vocabulary is shared, so one pass suffices.
+ *
+ * Output-neutral by construction: with an empty cache today the Voronoi falls
+ * back to the raw era cell, so `borderID` here reproduces exactly that (raw
+ * cell, `A(F)` unwrapped, tail preserved) and `visible` defaults to true (no
+ * `visibilityOverride` config exists).
+ *
+ * @param systems Systems from stage 1 (era cells stored raw)
+ * @param eras All eras of the read — enrichment covers every system x era
+ * @param options Optional faction registry (for colors) and visibility overrides
+ * @returns The same systems array, for chaining
+ */
+export function parseSystemsV3Csv(
+  systems: Array<System>,
+  eras: Array<Era>,
+  options: EnrichmentOptions = {},
+): Array<System> {
+  const factionRegistry = options.factionRegistry ?? new FactionRegistry();
+  const visibilityOverride = options.visibilityOverride ?? {};
+
+  let entries = 0;
+  for (const system of systems) {
+    for (const era of eras) {
+      const raw = (system.eraAffiliations?.[era.index] || '').trim();
+      const parsed = parseYearCell(raw);
+
+      setCacheEntry(`${system.id}_${era.index}`, {
+        nation: parsed.nation,
+        borderID: borderSeedingAffiliation(raw),
+        factionColor: resolveFactionColor(parsed.nation, factionRegistry),
+        visible: computeVisibility(parsed.nation, visibilityOverride),
+        attribute: parsed.attribute,
+      });
+      entries++;
     }
   }
 
-  // Common aliases used by parseSingleSystem / downstream consumers.
-  if (columnIndexMap['systemid'] !== undefined) columnIndexMap['id'] = columnIndexMap['systemid'];
-  if (columnIndexMap['systemname'] !== undefined) columnIndexMap['name'] = columnIndexMap['systemname'];
-
-  // Era columns: any header matching a 4-digit year (optionally suffixed by a
-  // letter, e.g. "3050a") is an era column, in header order.
-  const eraColumnIndices: number[] = [];
-  headerRow.forEach((rawHeader, index) => {
-    const key = (rawHeader ?? '').toString().trim().toLowerCase();
-    if (/^\d{4}([a-z])?$/.test(key)) {
-      eraColumnIndices.push(index);
-    }
-  });
-
-  if (columnIndexMap['x'] === undefined || columnIndexMap['y'] === undefined) {
-    logger.warn('parse-systems-v3-csv.ts', 'Missing x or y columns in exports CSV, cannot parse systems');
-    traceFaction('src/read/common/parse-systems-v3-csv.ts', 'missingCoordinates', `x=${columnIndexMap['x']}, y=${columnIndexMap['y']}`);
-    return [];
-  }
-
-  traceFaction(
-    'src/read/common/parse-systems-v3-csv.ts',
-    'columnMappingComplete',
-    `x=${columnIndexMap['x']}, y=${columnIndexMap['y']}, id=${columnIndexMap['id']}, name=${columnIndexMap['name']}, eras=${eraColumnIndices.length}`,
-  );
-
-  for (let rowIndex = HEADER_ROW_INDEX + 1; rowIndex < rows.length; rowIndex++) {
-    const row = rows[rowIndex];
-
-    if (!row || row.length === 0 || row.every((cell) => (cell ?? '').trim() === '')) {
-      traceFaction('src/read/common/parse-systems-v3-csv.ts', 'skipEmptyRow', `rowIndex=${rowIndex}`);
-      continue;
-    }
-
-    const get = (name: string): string => {
-      const idx = columnIndexMap[name];
-      return idx !== undefined && idx < row.length ? (row[idx] ?? '') : '';
-    };
-
-    const xRaw = get('x');
-    const yRaw = get('y');
-    if (isNaN(parseFloat(xRaw)) || isNaN(parseFloat(yRaw))) {
-      traceFaction(
-        'src/read/common/parse-systems-v3-csv.ts',
-        'skipNoCoordinates',
-        `rowIndex=${rowIndex}, x=${xRaw}, y=${yRaw}, id=${get('id')}, name=${get('name')}`,
-      );
-      continue;
-    }
-
-    const rawSize = get('size');
-    const sizeParts = (rawSize || '')
-      .split(/[,|]/)
-      .map((element) => parseFloat(element))
-      .filter((n) => !isNaN(n));
-
-    const eraAffiliations = eras.map((_, eraIndex) => {
-      const colIndex = eraColumnIndices[eraIndex];
-      const raw =
-        colIndex !== undefined && colIndex < row.length ? row[colIndex] : undefined;
-      return raw !== undefined && raw !== null && raw.trim() !== '' ? String(raw).trim() : 'U';
-    });
-
-    const rowToParse: SystemRow = {
-      id: get('id'),
-      name: get('name'),
-      alternateNames: '',
-      x: parseFloat(xRaw),
-      y: parseFloat(yRaw),
-      size: (sizeParts.length >= 2 ? [sizeParts[0], sizeParts[1], sizeParts[2] ?? 0] : [1, 1, 0]) as [number, number, number],
-      eraAffiliations,
-    };
-
-    traceFaction(
-      'src/read/common/parse-systems-v3-csv.ts',
-      'parseRowInput',
-      `rowIndex=${rowIndex}, id=${rowToParse.id}, name=${rowToParse.name}, x=${rowToParse.x}, y=${rowToParse.y}`,
-    );
-
-    systems.push(parseSingleSystem('system-export-csv-' + rowIndex, rowToParse, eras));
-
-    traceFaction('src/read/common/parse-systems-v3-csv.ts', 'parseRowOutput', `rowIndex=${rowIndex}, systemParsed success`);
-  }
-
-  systems.sort((a, b) => b.radiusX + b.radiusY - (a.radiusX + a.radiusY));
-
-  const systemsWithIds = systems.map((s) => s.id).filter((id) => id && id.trim() !== '');
-  traceFaction(
-    'src/read/common/parse-systems-v3-csv.ts',
-    'functionComplete',
-    `totalSystems=${systems.length}, systemsWithIds=${systemsWithIds.length}, eraCount=${eras.length}`,
-  );
-
-  logger.info(`${systems.length} systems read (v3 CSV exports format).`);
+  traceFaction(FILE_NAME, 'enrich', `systems=${systems.length}, eras=${eras.length}, entries=${entries}`);
   return systems;
 }

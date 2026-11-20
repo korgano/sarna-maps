@@ -1,0 +1,12 @@
+{
+  // Type gate for production code (what ts-node compiles for `npm start`).
+  // Test files (*.test.ts) are excluded: several carry pre-existing type
+  // drift versus evolved source (see `npx tsc --noEmit` baseline) and are
+  // covered by vitest instead, which transpiles without typechecking.
+  "extends": "./tsconfig.base.json",
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/*.test.ts"
+  ]
+}

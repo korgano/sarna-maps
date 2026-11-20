@@ -1,4 +1,4 @@
-<pattern id="{{PREFIX}}border-fill-{{ID}}" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(-45)">
-    <line x1="0" y1="0" x2="0" y2="4" style="stroke: {{COLOR1}}; stroke-width: 4px;" />
-    <line x1="4" y1="0" x2="4" y2="4" style="stroke: {{COLOR2}}; stroke-width: 4px;" />
+<pattern id="{{PREFIX}}border-fill-{{ID}}" patternUnits="userSpaceOnUse" width="4" height="4" viewBox="0 0 4 4" patternTransform="rotate(-45)">
+    <rect x="0" y="0" width="2" height="4" fill="{{COLOR1}}" />
+    <rect x="2" y="0" width="2" height="4" fill="{{COLOR2}}" />
 </pattern>

@@ -35,10 +35,10 @@ function appendToFile(line: string): void {
 }
 
 export const logger = {
-  debug: (...messages: any[]) => logSettings.level <= LOGGER_LEVELS.All && console.debug('[DEBUG]', ...messages),
-  log: (...messages: any[]) => logSettings.level <= LOGGER_LEVELS.NoDebug && console.log('[LOG]', ...messages),
-  info: (...messages: any[]) => logSettings.level <= LOGGER_LEVELS.NoLogsOrDebug && console.info('[INFO]', ...messages),
-  warn: (fileName: string, ...messages: any[]) => {
+  debug: (...messages: unknown[]) => logSettings.level <= LOGGER_LEVELS.All && console.debug('[DEBUG]', ...messages),
+  log: (...messages: unknown[]) => logSettings.level <= LOGGER_LEVELS.NoDebug && console.log('[LOG]', ...messages),
+  info: (...messages: unknown[]) => logSettings.level <= LOGGER_LEVELS.NoLogsOrDebug && console.info('[INFO]', ...messages),
+  warn: (fileName: string, ...messages: unknown[]) => {
     const prefix = fileName ? `[${fileName}] ` : '';
     const fullMessage = `[WARNING] ${prefix}` + messages.map(m => String(m)).join(' ');
     if (logSettings.level <= LOGGER_LEVELS.WarningsAndErrors) {
@@ -46,7 +46,7 @@ export const logger = {
     }
     appendToFile(fullMessage);
   },
-  error: (fileName: string, ...messages: any[]) => {
+  error: (fileName: string, ...messages: unknown[]) => {
     const prefix = fileName ? `[${fileName}] ` : '';
     const fullMessage = `[ERROR] ${prefix}` + messages.map(m => String(m)).join(' ');
     if (logSettings.level <= LOGGER_LEVELS.ErrorsOnly) {

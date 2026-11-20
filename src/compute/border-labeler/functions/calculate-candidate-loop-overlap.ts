@@ -3,27 +3,56 @@ import { distance, lineSegmentIntersection, Point2d, pointAlongEdgePath, pointIs
 import { BorderEdgeLoop } from '../../voronoi-border';
 
 /**
- * Calculate a border label candidate's loopOverlapDistance field. The field is the approximate number of units
- * that the candidate intersects "past" its edge loop.
+ * Precompute the midpoint of each edge in a loop. Call once per loop, then pass
+ * to calculateCandidateLoopOverlap for each candidate to avoid repeated allocation.
  *
- * @param candidate The border label candidate
  * @param loop The edge loop
+ * @returns Array of midpoints, one per edge
  */
-export function calculateCandidateLoopOverlap(candidate: BorderLabelCandidate, loop: BorderEdgeLoop) {
-  candidate.loopOverlapDistance = 0;
-
-  loop.edges.forEach((loopEdge) => {
-    let intersectionDistance: number;
-    const midPoint = pointAlongEdgePath([{
+export function precomputeEdgeMidpoints(loop: BorderEdgeLoop): Array<Point2d | undefined> {
+  return loop.edges.map((loopEdge) =>
+    pointAlongEdgePath([{
       p1: loopEdge.node1,
       p2: loopEdge.node2,
       p1c2: loopEdge.n1c2,
       p2c1: loopEdge.n2c1,
       length: loopEdge.length,
-    }], loopEdge.length * 0.5)?.point;
+    }], loopEdge.length * 0.5)?.point
+  );
+}
+
+/**
+ * Calculate a border label candidate's loopOverlapDistance field. The field is the approximate number of units
+ * that the candidate intersects "past" its edge loop.
+ *
+ * @param candidate The border label candidate
+ * @param loop The edge loop
+ * @param earlyExitThreshold Optional: if provided, stop iterating once loopOverlapDistance exceeds this value
+ *   (the candidate will be disqualified anyway)
+ * @param precomputedMidpoints Optional: precomputed edge midpoints from precomputeEdgeMidpoints()
+ */
+export function calculateCandidateLoopOverlap(
+  candidate: BorderLabelCandidate,
+  loop: BorderEdgeLoop,
+  earlyExitThreshold?: number,
+  precomputedMidpoints?: Array<Point2d | undefined>,
+) {
+  candidate.loopOverlapDistance = 0;
+
+  for (let i = 0; i < loop.edges.length; i++) {
+    const loopEdge = loop.edges[i];
+    const midPoint = precomputedMidpoints
+      ? precomputedMidpoints[i]
+      : pointAlongEdgePath([{
+          p1: loopEdge.node1,
+          p2: loopEdge.node2,
+          p1c2: loopEdge.n1c2,
+          p2c1: loopEdge.n2c1,
+          length: loopEdge.length,
+        }], loopEdge.length * 0.5)?.point;
     // For curves, check the two edges from the endpoints to the midpoint.
     // For straight edges, just use the two endpoints
-    intersectionDistance = midPoint
+    const intersectionDistance = midPoint
       ? Math.max(
           getIntersectionDistance(candidate, [loopEdge.node1, midPoint], !!loop.isInnerLoop),
           getIntersectionDistance(candidate, [midPoint, loopEdge.node2], !!loop.isInnerLoop),
@@ -31,7 +60,11 @@ export function calculateCandidateLoopOverlap(candidate: BorderLabelCandidate, l
       : getIntersectionDistance(candidate, [loopEdge.node1, loopEdge.node2], !!loop.isInnerLoop);
 
     candidate.loopOverlapDistance = Math.max(candidate.loopOverlapDistance || 0, intersectionDistance);
-  });
+
+    if (earlyExitThreshold !== undefined && candidate.loopOverlapDistance > earlyExitThreshold) {
+      return;
+    }
+  }
 }
 
 /**

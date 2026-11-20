@@ -1,19 +1,16 @@
 import path from 'path';
 import { BorderLabelsResult } from '../../../compute';
 import {
-  Faction,
+  FactionRegistry,
   hslToRgb,
   pointOnLine,
   rgbToHsl,
   TextTemplate
 } from '../../../common';
-import { FactionAffiliationPair } from '../../../read/common/retain-faction-affiliation-pairing';
-import { resolveFactionRenderStyle } from '../types/faction-render-style';
 
 export function renderBorderLabels(
   result: BorderLabelsResult,
-  factions: Record<string, Faction>,
-  pairs: Map<string, FactionAffiliationPair>,
+  factionRegistry: FactionRegistry,
   theme: 'light' | 'dark',
   prefix = '',
   pixelsPerMapUnit = 1,
@@ -29,9 +26,9 @@ export function renderBorderLabels(
   const labelTokenTemplate = new TextTemplate('border-label-token.svg.tpl', templatePath);
   const layerTemplate = new TextTemplate('element-group.svg.tpl', templatePath);
   let debugMarkup = '';
-  let defs = '';
-  let css = '';
-  let markup = '';
+  const defsFragments: string[] = [];
+  const cssFragments: string[] = [];
+  const markupFragments: string[] = [];
   const defPrefix = prefix.length ? prefix + '-' : '';
   const cssPrefix = prefix.length ? `.${prefix} ` : '';
   Object.keys(result.candidatesByFaction).forEach((factionKey) => {
@@ -39,9 +36,6 @@ export function renderBorderLabels(
     // debug mode output
     if (false && factionKey === 'FWL') {
       candidates.forEach((candidate, candidateIndex) => {
-        // if (candidate.labelVariant === 'Abbreviation') {
-        //   return;
-        // }
         const rectPath = `M` + candidate.rect.bl.x.toFixed(2) + `,`
           + (-candidate.rect.bl.y).toFixed(2) + ' L'
           + candidate.rect.tl.x.toFixed(2) + ','
@@ -84,38 +78,17 @@ export function renderBorderLabels(
           p1y: -(candidate.perpEdge![0].y).toFixed(2),
           p2x: candidate.perpEdge![1].x.toFixed(2),
           p2y: -(candidate.perpEdge![1].y).toFixed(2),
-          // i: candidateIndex,
-          // cls: candidate.pointIsInside ? 'inside' : 'outside',
           rectPath,
           rectClass,
           id: candidate.id,
           label_overlap: candidate.labelOverlapArea,
           disqualification: candidate.disqualificationReason || '',
         });
-
-        if (debugOverlapTemplate) {
-          (candidate.overlapPolygons || []).forEach((polygon) => {
-            let path = 'M';
-            polygon.forEach((point, pointIndex) => {
-              if (pointIndex > 0) {
-                path += ' L';
-              }
-              path += point.x.toFixed(2) + ',' + (-point.y).toFixed(2);
-            });
-            path += 'z';
-            debugMarkup += debugOverlapTemplate.replace({ path });
-          });
-        }
       });
     }
 
     // make sure the border labels are visible against the faction background
-    const style = resolveFactionRenderStyle({
-      factionKey,
-      factionMap: factions,
-      pairs,
-    });
-    const colorHsl = rgbToHsl(style.color || '#000');
+    const colorHsl = rgbToHsl(factionRegistry.get(factionKey)?.color || '#000');
     if (theme === 'light') {
       if (colorHsl.l >= 0.8) {
         colorHsl.l *= 0.4;
@@ -131,9 +104,9 @@ export function renderBorderLabels(
     }
     const factionLabelColor = hslToRgb(colorHsl);
 
-    let labelDefs = '';
+    const labelDefsFragments: string[] = [];
     candidates.forEach((candidate) => {
-      let labelMarkup = '';
+      const tokenFragments: string[] = [];
       candidate.tokens.forEach((token, tokenIndex) => {
         const tokenId = candidate.id + '-T-' + tokenIndex;
         const baseline = candidate.labelBaselines.middle && tokenIndex === 0
@@ -146,7 +119,7 @@ export function renderBorderLabels(
         const startPoint = pointOnLine(midPoint, baseline.p1, token.width * 0.5);
         const endPoint = pointOnLine(midPoint, baseline.p2, token.width * 0.5);
         // create label path for defs section
-        labelDefs += labelTokenDefsTemplate.replace({
+        labelDefsFragments.push(labelTokenDefsTemplate.replace({
           id: defPrefix + tokenId,
           path: `M`
             + startPoint.x.toFixed(2) + ','
@@ -154,30 +127,33 @@ export function renderBorderLabels(
             + ' L'
             + endPoint.x.toFixed(2) + ','
             + (-endPoint.y).toFixed(2),
-        });
+        }));
         // create label tokens
-        labelMarkup += labelTokenTemplate.replace({
+        tokenFragments.push(labelTokenTemplate.replace({
           id: defPrefix + tokenId,
           token: token.str,
-        });
+        }));
       });
-      markup += labelTemplate.replace({
+      markupFragments.push(labelTemplate.replace({
         id: candidate.id,
-        content: labelMarkup,
+        content: tokenFragments.join(''),
         css_class: `border-label ${factionKey}`
-      });
+      }));
     });
     if (candidates.length > 0) {
-      css += labelCssTemplate.replace({
+      cssFragments.push(labelCssTemplate.replace({
         prefix: cssPrefix,
         factionKey,
         color: factionLabelColor,
         shadowOffset: .01 * pixelsPerMapUnit,
-      });
+      }));
     }
-    defs += labelDefs;
+    defsFragments.push(labelDefsFragments.join(''));
   });
-  css += cssTemplate.replace({ prefix: cssPrefix })
+  cssFragments.push(cssTemplate.replace({ prefix: cssPrefix }));
+  const css = cssFragments.join('');
+  const defs = defsFragments.join('');
+  const markupContent = markupFragments.join('');
   if (debugMarkup.trim()) {
     return {
       css: debugCssTemplate.replace()
@@ -189,7 +165,7 @@ export function renderBorderLabels(
       }) + layerTemplate.replace({
         name: 'border-labels-layer',
         css_class: 'border-labels',
-        content: markup,
+        content: markupContent,
       }),
       defs,
     };
@@ -199,7 +175,7 @@ export function renderBorderLabels(
     markup: layerTemplate.replace({
       name: 'border-labels-layer',
       css_class: 'border-labels',
-      content: markup,
+      content: markupContent,
     }),
     defs,
   };

@@ -4,6 +4,7 @@ import yargsParser from 'yargs-parser';
 import {
   Era,
   Faction,
+  FactionRegistry,
   System,
   DataSourceConfig,
   logger, LOGGER_LEVELS, logSettings,
@@ -22,7 +23,7 @@ async function readConfigs() {
   const configDirectory = path.join(process.cwd(), 'config');
 
   if (!argv._?.length) {
-    logger.error('main.ts', 'No config filename provided. Please provide it as this script\'s first parameter.');
+    logger.error('No config filename provided. Please provide it as this script\'s first parameter.');
     process.exit(1);
   }
 
@@ -33,7 +34,7 @@ async function readConfigs() {
       generatorConfigPath += '.config.yaml';
     }
     if (!fs.existsSync(generatorConfigPath)) {
-      logger.error('main.ts', `Config file does not exist at "${argv._[0]}"`);
+      logger.error(`Config file does not exist at "${argv._[0]}"`);
       process.exit(1);
     } else {
       logger.info(`Config filename "${argv._[0]}" was interpreted as "${generatorConfigPath}"`);
@@ -53,10 +54,9 @@ async function readConfigs() {
   return configs;
 }
 
-// src/main.ts
-
 async function readData(dataSourceConfig: DataSourceConfig) {
   if (dataSourceConfig.useSource === 'google') {
+    logger.info(`Attempting to read Google sheet with ID "${dataSourceConfig.googleSheetsConfig?.spreadsheetId}"`);
     return await readFromGoogleSheet(dataSourceConfig);
   }
 
@@ -106,20 +106,11 @@ async function run() {
   if (!generatorConfig.debugMode) {
     logSettings.level = LOGGER_LEVELS.NoLogsOrDebug;
   }
-
-  // Faction traversal logger configured via config/global/faction-traversal.config.yaml
-  // No programmatic overrides - YAML config is the only method
-
   const sheetData = await readData(dataSourceConfig);
-  // FactionRegistry: canonical map keyed case-insensitively.
-  // Preserve original id for display (AuC) but also index by upper-case to guarantee
-  // `resolveFactionRenderStyle` finds mixed-case ids (AuC, CoF, SiS) when normalized
-  // keys arrive as AUC/COF. This is the single source of truth for faction lookup.
-  const factionMap: Record<string, Faction> = {};
-  sheetData.factions.forEach((faction: Faction) => {
-    factionMap[faction.id] = faction;
-    factionMap[faction.id.toUpperCase()] = faction;
-  });
+  // FactionRegistry: canonical, case-insensitive faction lookup.
+  // Single source of truth — replaces dual-key factionMap.
+  const factionRegistry = new FactionRegistry();
+  factionRegistry.registerAll(sheetData.factions);
 
   await writeSvgMaps(
     generatorConfig,
@@ -127,8 +118,9 @@ async function run() {
     systemLabelConfig,
     borderLabelConfig,
     sheetData.eras,
-    factionMap,
+    factionRegistry,
     sheetData.systems,
+    sheetData.pairs,
   );
 }
 

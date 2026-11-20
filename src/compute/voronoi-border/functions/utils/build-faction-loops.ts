@@ -1,20 +1,184 @@
 import { BorderDelaunayVertex, BorderSection, VoronoiBorderEdge, VoronoiBorderNode } from '../../types';
-import { logger, pointIsLeftOfLine } from '../../../../common';
+import { extractBorderStateAffiliation, lineSegmentIntersection, logger, pointIsLeftOfLine, polygonContains } from '../../../../common';
 import { reverseEdges } from './reverse-edges';
+import { reverseEdgeLoop } from './reverse-edge-loop';
 import { ensureEdgeLoopClockwiseOrder } from '../ensure-edge-loop-clockwise-order';
 import { coordKey } from './node-coord-key';
+import { EMPTY_FACTION } from '../../../constants';
 
 /**
  * Two endpoints count as the same node when their ids match *or* (as a
- * defensive fallback) when they sit at the same coordinate. The id-based match
- * is canonical after `normalizeBorderNodeIds`, but the coordinate fallback
- * protects against any future divergence between section assembly (which
- * matches by coordinate) and faction-loop assembly (which matches by id).
- * Uses the shared `coordKey` (single equality primitive) to avoid
- * floating-point drift issues.
+ * defensive fallback) when they sit at approximately the same coordinate.
+ * The id-based match is canonical after `normalizeBorderNodeIds`, but the
+ * coordinate fallback protects against floating-point drift that can occur
+ * during simplify/pass operations. Uses a tolerance-based distance check
+ * rather than exact coordKey matching to handle small coordinate variations.
  */
+/**
+ * Averages the coordinates of every same-id endpoint across the given
+ * sections, in place. See the call-site comment in `buildFactionLoops`.
+ */
+export function weldSectionJunctions(sections: Array<BorderSection>): void {
+  const byId = new Map<string, Array<VoronoiBorderNode>>();
+  for (const section of sections) {
+    for (const edge of section.edges) {
+      for (const node of [edge.node1, edge.node2]) {
+        if (!node || !isFinite(node.x) || !isFinite(node.y)) continue;
+        const list = byId.get(node.id) || [];
+        list.push(node);
+        byId.set(node.id, list);
+      }
+    }
+  }
+  for (const refs of byId.values()) {
+    if (refs.length < 2) continue;
+    let sx = 0;
+    let sy = 0;
+    for (const r of refs) {
+      sx += r.x;
+      sy += r.y;
+    }
+    const mx = sx / refs.length;
+    const my = sy / refs.length;
+    for (const r of refs) {
+      r.x = mx;
+      r.y = my;
+    }
+  }
+}
+
+/**
+ * Maximum closing-chord length (map units) for stranded chains. A chain whose
+ * own free ends nearly meet (observed: FWL's 81-edge border on a 0.35 gap,
+ * CFG's cluster chain on a 3.0 gap) is a closure failure from simplify drift
+ * or a dropped short segment — not a real coastline. Real coastlines end far
+ * apart. Length alone is NOT the safety check: `trySelfClose` additionally
+ * requires a border-free, foreign-system-free corridor (below), so the bound
+ * only limits visual distortion, and genuine dead-ends stay open.
+ */
+const CHORD_MAX_LENGTH = 8;
+
+/**
+ * Default shared-edge ratio at which a SHORTER closed loop counts as a
+ * near-duplicate of a longer one and is dropped (see `isNearDuplicate`).
+ * Tunable per call through `buildFactionLoops`' 4th parameter; the default
+ * stays 90% so existing maps render unchanged.
+ */
+export const NEAR_DUPLICATE_THRESHOLD = 0.9;
+
+/**
+ * Attempts to close a stranded chain with a synthetic chord between its own
+ * free ends. Returns true when closed (seed mutated: chord appended, flagged
+ * loop, endpoints re-derived).
+ *
+ * Safety (all required — first principles for topology preservation):
+ * 1. Gap within CHORD_MAX_LENGTH (bounds distortion).
+ * 2. The chord crosses NO existing border segment (closing must not cut
+ *    through another border — shared endpoints excluded).
+ * 3. No FOREIGN-affiliation system near the chord corridor (closing must not
+ *    swallow systems the border was routed around; own-faction systems may be
+ *    enclosed — that is the point of closing).
+ * The chord's left/right affiliations stay empty so it never votes in owner
+ * computation.
+ */
+function trySelfClose(
+  seed: BorderSection,
+  sections: Array<BorderSection>,
+  vertices: Array<BorderDelaunayVertex>,
+  faction: string,
+): boolean {
+  if (seed.edges.length === 0) return false;
+  const start = seed.edges[0].node1;
+  const end = seed.edges[seed.edges.length - 1].node2;
+  if (!isFinite(start.x) || !isFinite(start.y) || !isFinite(end.x) || !isFinite(end.y)) {
+    return false;
+  }
+  const gap = Math.hypot(end.x - start.x, end.y - start.y);
+  if (gap > CHORD_MAX_LENGTH) return false;
+
+  const chord = { p1: { x: start.x, y: start.y }, p2: { x: end.x, y: end.y } };
+  const endTol2 = 1e-12;
+  const nearEnd = (p: { x: number; y: number }) =>
+    (p.x - start.x) * (p.x - start.x) + (p.y - start.y) * (p.y - start.y) <= endTol2 ||
+    (p.x - end.x) * (p.x - end.x) + (p.y - end.y) * (p.y - end.y) <= endTol2;
+
+  // Guard 2: no border crossings (all sections, all factions).
+  for (const section of sections) {
+    for (const edge of section.edges) {
+      const hit = lineSegmentIntersection(
+        chord,
+        { p1: { x: edge.node1.x, y: edge.node1.y }, p2: { x: edge.node2.x, y: edge.node2.y } },
+      );
+      if (hit && !nearEnd(hit)) return false;
+    }
+  }
+
+  // Guard 3: no foreign systems in the chord corridor.
+  const midX = (start.x + end.x) / 2;
+  const midY = (start.y + end.y) / 2;
+  const corridorR = gap / 2 + 1;
+  const factionUpper = faction.toUpperCase();
+  for (const v of vertices) {
+    const dx = v.x - midX;
+    const dy = v.y - midY;
+    if (dx * dx + dy * dy > corridorR * corridorR) continue;
+    const vAff = extractBorderStateAffiliation(v.affiliation, undefined, undefined, 1, true);
+    if (!vAff || vAff === EMPTY_FACTION) continue;
+    if (vAff.toUpperCase() !== factionUpper && !vAff.toUpperCase().includes(factionUpper)) {
+      return false;
+    }
+  }
+
+  const lastEdge = seed.edges[seed.edges.length - 1];
+  seed.edges.push({
+    ...lastEdge,
+    id: `close-${seed.id}`,
+    node1: end,
+    node2: start,
+    leftAffiliation: '',
+    rightAffiliation: '',
+    length: gap,
+  });
+  seed.node1 = seed.edges[0].node1;
+  seed.node2 = start;
+  seed.isLoop = true;
+  logger.debug(
+    'build-faction-loops.ts',
+    `Self-closed stranded chain with ${gap.toFixed(4)}-unit chord`,
+    faction,
+    seed.id,
+  );
+  return true;
+}
+
 function sameNode(a: VoronoiBorderNode, b: VoronoiBorderNode): boolean {
-  return a.id === b.id || coordKey(a.x, a.y) === coordKey(b.x, b.y);
+  if (a.id === b.id) return true;
+  // Tolerance-based coordinate comparison: match if within 0.000001 units.
+  // This handles floating-point drift from simplify/pass operations while
+  // still preventing false matches from widely-different coordinates.
+  const dx = Math.abs(a.x - b.x);
+  const dy = Math.abs(a.y - b.y);
+  return dx <= 0.000001 && dy <= 0.000001;
+}
+
+/**
+ * Direction-independent identity contribution of an edge's Bezier control
+ * points (n1c1/n1c2/n2c1/n2c2), keyed with the same 6dp rounding as node
+ * coordinates. Control points are REQUIRED for identity: node ids (and even
+ * endpoint pairs) are not precise enough on their own — post-simplify id
+ * collisions make two DIFFERENT physical segments share one id, and an
+ * id-only key then silently dropped one of them, punching a gap in the loop.
+ *
+ * Reversal must not change identity: `swapEdgeNodes` mirrors the arrangement
+ * (n1c1<->n2c2, n1c2<->n2c1), so the canonical form is the lexicographically
+ * smaller of the forward and mirrored tuples — a segment reversed onto its
+ * own twin still keys identically.
+ */
+function controlPointsKey(edge: VoronoiBorderEdge): string {
+  const cp = (p?: { x: number; y: number }) => (p ? coordKey(p.x, p.y) : '_');
+  const forward = [edge.n1c1, edge.n1c2, edge.n2c1, edge.n2c2].map(cp).join('|');
+  const mirrored = [edge.n2c2, edge.n2c1, edge.n1c2, edge.n1c1].map(cp).join('|');
+  return forward <= mirrored ? forward : mirrored;
 }
 
 /**
@@ -26,15 +190,20 @@ function sameNode(a: VoronoiBorderNode, b: VoronoiBorderNode): boolean {
  * id the precise identity of a physical segment, and it stays correct even for
  * synthetic nodes whose coordinates were moved by the simplify passes.
  *
+ * Identity additionally includes the edge's Bezier control points (see
+ * `controlPointsKey`): edges sharing an id but carrying different curves are
+ * distinct segments and both must survive dedupe.
+ *
  * Edges without an id fall back to their unordered coordinate pair.
  */
 function undirectedEdgeKey(edge: VoronoiBorderEdge): string {
+  const controls = controlPointsKey(edge);
   if (edge.id) {
-    return `id:${edge.id}`;
+    return `id:${edge.id}|cp:${controls}`;
   }
   const a = coordKey(edge.node1.x, edge.node1.y);
   const b = coordKey(edge.node2.x, edge.node2.y);
-  return a < b ? `xy:${a}|${b}` : `xy:${b}|${a}`;
+  return a < b ? `xy:${a}|${b}|cp:${controls}` : `xy:${b}|${a}|cp:${controls}`;
 }
 
 /**
@@ -79,7 +248,17 @@ export function buildFactionLoops(
   faction: string,
   sections: Array<BorderSection>,
   vertices: Array<BorderDelaunayVertex>,
+  nearDuplicateThreshold: number = NEAR_DUPLICATE_THRESHOLD,
 ) {
+  // Re-weld junction coordinates by node id BEFORE matching. Simplify passes
+  // mutate the distinct node objects of shared junctions independently, so
+  // copies of one physical point drift apart and endpoint matching (by id or
+  // rounded coords) misses true joints — entire factions collapse into single
+  // uncloseable chains. Averaging same-id endpoints back together restores
+  // exact id-matches. (Simplify-created nodes carry fresh unique ids, so
+  // same-id averaging never fuses distinct points.)
+  weldSectionJunctions(sections);
+
   // search sections for only this faction
   const filteredSections = sections.filter(
     (section) => section.affiliation1 === faction || section.affiliation2 === faction,
@@ -118,7 +297,7 @@ export function buildFactionLoops(
   // sections meeting at the same physical point are found as candidates even
   // when their node ids differ (the divergence that previously stranded
   // borders as open loops). Storing section *references* (not array indices)
-  // keeps the index valid when factionSections is spliced.
+  // keeps the index valid when sections are removed from the active set.
   const nodeKey = (node: VoronoiBorderNode) => coordKey(node.x, node.y);
   const endpointIndex = new Map<string, Set<BorderSection>>();
   const indexEndpoint = (section: BorderSection) => {
@@ -143,14 +322,16 @@ export function buildFactionLoops(
   };
   factionSections.forEach((section) => indexEndpoint(section));
 
-  while (factionSections.length > 0) {
-    const seed = factionSections[factionSections.length - 1];
+  const active = new Set(factionSections);
+
+  while (active.size > 0) {
+    const seed = active.values().next().value!;
 
     // Already a closed loop - emit and advance.
     if (seed.isLoop) {
       loops.push(seed);
       deindexEndpoint(seed);
-      factionSections.splice(factionSections.indexOf(seed), 1);
+      active.delete(seed);
       continue;
     }
 
@@ -183,9 +364,9 @@ export function buildFactionLoops(
           }
 
           if (merged) {
-            // Remove the candidate entirely (from index + working array).
+            // Remove the candidate entirely (from index + active set).
             deindexEndpoint(candidate);
-            factionSections.splice(factionSections.indexOf(candidate), 1);
+            active.delete(candidate);
             // Recompute seed endpoints from the merged edge list, then
             // reindex the seed under its (possibly new) node ids.
             seed.node1 = seed.edges[0].node1;
@@ -197,7 +378,7 @@ export function buildFactionLoops(
             progress = true;
             if (seed.isLoop) {
               loops.push(seed);
-              factionSections.splice(factionSections.indexOf(seed), 1);
+              active.delete(seed);
               deindexEndpoint(seed);
               break outer;
             }
@@ -208,6 +389,18 @@ export function buildFactionLoops(
     }
 
     if (!mergedAny) {
+      // Self-closure (guarded; see trySelfClose): a chain whose OWN free ends
+      // nearly meet across border-free, foreign-system-free ground is a
+      // closure failure from simplify drift or a dropped short segment — not
+      // a real coastline. Join the ends so the territory closes (observed:
+      // FWL's entire 81-edge border stranded on a 0.35-unit gap; a CFG
+      // cluster chain on a 3.0-unit gap).
+      if (trySelfClose(seed, sections, vertices, faction)) {
+        loops.push(seed);
+        deindexEndpoint(seed);
+        active.delete(seed);
+        continue;
+      }
       // Stranded open chain: its free ends connect to no other same-faction
       // section (e.g. disconnected island or T-junction). Emit it rather than
       // dropping it, and advance so we never spin on the same seed.
@@ -221,7 +414,7 @@ export function buildFactionLoops(
       );
       loops.push(seed);
       deindexEndpoint(seed);
-      factionSections.splice(factionSections.indexOf(seed), 1);
+      active.delete(seed);
     }
   }
 
@@ -257,8 +450,8 @@ export function buildFactionLoops(
       .reduce((sum, current) => sum + current, 0);
 
     loop.edges.forEach((edge, edgeIndex) => {
-      // Mark the leftmost-bottommost edge as the loop's minimum edge (a point
-      // guaranteed to be on the convex hull, usable as a CW/CCW pivot).
+      // Mark the leftmost-topmost edge as the loop's minimum edge (the
+      // point with the smallest x, breaking ties by smallest y).
       if (loop.minEdgeIdx < 0 || edge.node2.x < loop.edges[loop.minEdgeIdx].node2.x) {
         loop.minEdgeIdx = edgeIndex;
       } else if (
@@ -304,13 +497,93 @@ export function buildFactionLoops(
     });
 
     // Only ensure clockwise order and set inner/outer affiliation for CLOSED loops.
-    // Stranded open borders (isLoop === false) have no "inside"/"outside" - they are
-    // just border lines between two factions. Calling ensureEdgeLoopClockwiseOrder
+    // Stranded open borders (isLoop === false) have no "inside"/"outside" — they are
+    // border lines between two factions. Calling ensureEdgeLoopClockwiseOrder
     // on them incorrectly wraps the edge index and assigns bogus inner/outer
     // affiliations, which causes rendering artifacts like disputed patterns over
-    // entire factions and color overlap.
+    // A loop built by buildFactionLoops("LC", ...) is LC's border — the inside
+    // is always LC. We assign innerAffiliation unconditionally rather than
+    // computing from rightAffiliation majority, because after simplification
+    // the per-edge pointIsLeftOfLine test can give wrong results, and the
+    // section assembly direction is arbitrary.
+    //
+    // For closed loops, we ALSO fix the winding direction so that the CW
+    // orientation is around the correct territory (not a neighboring faction's).
+    // This matters for edge left/right affiliation assignment in the renderer.
     if (loop.isLoop) {
+      // Ensure clockwise winding (the convention for closed loops)
       ensureEdgeLoopClockwiseOrder(loop);
+
+      // Determine the true inner affiliation by counting Delaunay vertices
+      // (actual system positions) inside the polygon. This catches loops that
+      // were assembled in the wrong winding direction.
+      function countVerticesInside(pts: Array<{x: number; y: number}>) {
+        const counts = new Map<string, number>();
+        for (const v of vertices) {
+          const vAff = extractBorderStateAffiliation(v.affiliation, undefined, undefined, 1, true);
+          if (!vAff || vAff === EMPTY_FACTION) continue;
+          if (polygonContains(pts, { x: v.x, y: v.y })) {
+            counts.set(vAff, (counts.get(vAff) ?? 0) + 1);
+          }
+        }
+        return counts;
+      }
+
+      let loopPoints = loop.edges.map((e) => e.node1);
+      let insideCounts = countVerticesInside(loopPoints);
+      let bestInsideAff: string | undefined;
+      let bestInsideCount = 0;
+      for (const [aff, count] of insideCounts) {
+        if (count > bestInsideCount) {
+          bestInsideAff = aff;
+          bestInsideCount = count;
+        }
+      }
+
+      if (bestInsideAff && bestInsideAff !== faction) {
+        logger.debug(
+          'build-faction-loops.ts',
+          `Loop for "${faction}" encloses "${bestInsideAff}" (${bestInsideCount} vertices). Reversing and re-orienting.`,
+          loop.id,
+        );
+        reverseEdgeLoop(loop);
+        ensureEdgeLoopClockwiseOrder(loop);
+
+        // Verify after reversal
+        loopPoints = loop.edges.map((e) => e.node1);
+        insideCounts = countVerticesInside(loopPoints);
+        let newBestAff: string | undefined;
+        let newBestCount = 0;
+        for (const [aff, count] of insideCounts) {
+          if (count > newBestCount) {
+            newBestAff = aff;
+            newBestCount = count;
+          }
+        }
+        if (newBestAff && newBestAff !== faction) {
+          logger.debug(
+            'build-faction-loops.ts',
+            `Still encloses "${newBestAff}" after reversal. Reversing again.`,
+            loop.id,
+          );
+          reverseEdgeLoop(loop);
+          ensureEdgeLoopClockwiseOrder(loop);
+        }
+      }
+    }
+
+    // The loop was assembled from this faction's own sections, so membership
+    // stays with the builder faction — but if the orientation-derived owner
+    // disagrees, the loop likely encloses foreign territory (inside-out
+    // assembly), which previously surfaced as mis-colored pockets with no
+    // diagnostic. Keep the force (render membership must not flap), but warn.
+    const computedOwner = loop.innerAffiliation;
+    loop.innerAffiliation = faction;
+    if (loop.isLoop && computedOwner && computedOwner.toUpperCase() !== faction.toUpperCase()) {
+      logger.warn(
+        'build-faction-loops.ts',
+        `Loop "${loop.id}" built for "${faction}" has computed owner "${computedOwner}" — forcing to builder faction; probable inside-out assembly enclosing foreign systems`,
+      );
     }
   });
 
@@ -327,10 +600,19 @@ export function buildFactionLoops(
   const closedLoops = loops.filter((l) => l.isLoop);
 
   /**
-   * Computes the owner faction of a closed loop by finding the most common
-   * rightAffiliation across its edges. For a properly-oriented clockwise loop,
-   * rightAffiliation is the faction on the inside (the territory owner).
-   * Falls back to `innerAffiliation` if no edges have rightAffiliation set.
+   * Computes the owner faction of a closed loop from the rightAffiliation
+   * votes across its edges. Every closed loop here runs through
+   * `ensureEdgeLoopClockwiseOrder` first, so the loop is clockwise and
+   * rightAffiliation is the faction on the INSIDE (the territory owner).
+   *
+   * NEVER falls back to `innerAffiliation`: that field is force-set to the
+   * builder faction for every loop (see the `loop.innerAffiliation = faction`
+   * assignment above), so a fallback would claim the builder owns loops whose
+   * interior actually belongs to someone else — and the enclave test would then
+   * delete a genuine enclave as "redundant". When no edge carries a vote the
+   * owner is genuinely unknown, so `undefined` is returned: the owner
+   * comparison then only matches against another vote-less loop (geometry
+   * decides), never against a loop with a known owner.
    */
   const computeOwnerFaction = (loop: BorderSection): string | undefined => {
     const counts = new Map<string, number>();
@@ -340,16 +622,13 @@ export function buildFactionLoops(
         counts.set(aff, (counts.get(aff) ?? 0) + 1);
       }
     }
-    if (counts.size === 0) return loop.innerAffiliation;
-    let best = '';
-    let bestCount = 0;
-    for (const [aff, count] of counts) {
-      if (count > bestCount) {
-        best = aff;
-        bestCount = count;
-      }
-    }
-    return best || loop.innerAffiliation;
+    // Deterministic owner pick: highest vote count wins, ties broken by
+    // faction key (ascending) so resolution never depends on map iteration order.
+    const sorted = [...counts.entries()].sort(
+      (a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
+    );
+    const bestEntry = sorted[0];
+    return bestEntry && bestEntry[1] > 0 ? bestEntry[0] : undefined;
   };
 
   const isEnclave = (inner: BorderSection, outer: BorderSection): boolean => {
@@ -363,7 +642,31 @@ export function buildFactionLoops(
     // Test the centroid of the inner loop against the outer polygon.
     const cx = inner.edges.reduce((s, e) => s + e.node1.x, 0) / inner.edges.length;
     const cy = inner.edges.reduce((s, e) => s + e.node1.y, 0) / inner.edges.length;
-    return polygonContains(outer, { x: cx, y: cy });
+    return polygonContains(outer.edges.map((e) => e.node1), { x: cx, y: cy });
+  };
+  // Near-duplicate suppression: a loop whose edge-id set is almost entirely
+  // (>= the near-duplicate threshold) contained in a LONGER loop's set is a
+  // duplicate rendering of the same border (e.g. nested twins whose noisy
+  // owners defeated the enclave test above) and would double-paint strokes and
+  // fills. This is purely geometric, so owner miscomputation cannot defeat it.
+  // The threshold is tunable via `nearDuplicateThreshold` (default
+  // NEAR_DUPLICATE_THRESHOLD = 90%, not 100%) so segmentation drift is
+  // tolerated; legitimately adjacent territories share only a few segments and
+  // stay below it.
+  const idSets = new Map<BorderSection, Set<string>>(
+    closedLoops.map((l) => [l, new Set(l.edges.map((e) => e.id).filter(Boolean))]),
+  );
+  const isNearDuplicate = (inner: BorderSection, outer: BorderSection): boolean => {
+    if (inner === outer) return false;
+    const innerIds = idSets.get(inner);
+    const outerIds = idSets.get(outer);
+    if (!innerIds || !outerIds || innerIds.size === 0) return false;
+    if ((inner.length ?? 0) >= (outer.length ?? 0)) return false;
+    let shared = 0;
+    for (const id of innerIds) {
+      if (outerIds.has(id)) shared++;
+    }
+    return shared / innerIds.size >= nearDuplicateThreshold;
   };
   const keptLoops = loops.filter((loop) => {
     if (!loop.isLoop) return true;
@@ -372,31 +675,21 @@ export function buildFactionLoops(
     );
     if (enclosed) {
       logger.debug('build-faction-loops.ts', 'Removing redundant enclave loop', loop.id, loop.innerAffiliation);
+      return false;
     }
-    return !enclosed;
+    const duplicated = closedLoops.some((other) => isNearDuplicate(loop, other));
+    if (duplicated) {
+      logger.debug(
+        'build-faction-loops.ts',
+        `Removing near-duplicate loop (>=${(nearDuplicateThreshold * 100).toFixed(0)}% shared edges)`,
+        loop.id,
+        loop.innerAffiliation,
+      );
+      return false;
+    }
+    return true;
   });
 
   keptLoops.sort((a, b) => (b.length ?? 0) - (a.length ?? 0));
   return keptLoops;
-}
-
-/**
- * Ray-casting point-in-polygon test. The loop is treated as a closed polygon
- * over its edge endpoints (node1 of each edge). Works for either winding order.
- */
-function polygonContains(loop: BorderSection, point: { x: number; y: number }): boolean {
-  const pts = loop.edges.map((e) => e.node1);
-  if (pts.length < 3) return false;
-  let inside = false;
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const xi = pts[i].x;
-    const yi = pts[i].y;
-    const xj = pts[j].x;
-    const yj = pts[j].y;
-    const intersects =
-      yi > point.y !== yj > point.y &&
-      point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
-    if (intersects) inside = !inside;
-  }
-  return inside;
 }

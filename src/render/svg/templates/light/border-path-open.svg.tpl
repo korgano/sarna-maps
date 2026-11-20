@@ -1,1 +1,0 @@
-<path fill-rule="evenodd" fill="none" d="{{D}}" {{META}} />

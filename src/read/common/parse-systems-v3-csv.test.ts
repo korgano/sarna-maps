@@ -1,88 +1,158 @@
-import { describe, it, expect } from 'vitest';
-import { parseV3CapitalAndRegion, parseSystemsV3Csv } from './parse-systems-v3-csv';
-import { Era } from '../../common';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { parseSystemsV3Csv, parseYearCell, borderSeedingAffiliation } from './parse-systems-v3-csv';
+import {
+  clearPairingCache,
+  getCacheEntryAttribute,
+  getCacheEntryBorderID,
+  getCacheEntryFactionColor,
+  getCacheEntryNation,
+  getCacheEntryVisible,
+} from './retain-faction-affiliation-pairing';
+import { Era, Faction, FactionRegistry, System } from '../../common';
 
-const eras: Array<Era> = [
+const eras: Era[] = [
   { index: 0, name: '2271', year: 2271 },
-  { index: 1, name: '3050a', year: 3050 },
+  { index: 1, name: '3050', year: 3050 },
 ];
 
-describe('parseV3CapitalAndRegion', () => {
-  it('extracts capital level and region from a fully-formed 4-token affiliation', () => {
-    const result = parseV3CapitalAndRegion('DC|Pesht Military District|Kagoshima Prefecture|National Capital');
-    expect(result.capitalLevel).toBe(1);
-    expect(result.region).toBe('Kagoshima Prefecture');
+function makeSystem(id: string, eraAffiliations: string[]): System {
+  return {
+    id,
+    name: `Test ${id}`,
+    fullName: `Test ${id}`,
+    x: 0,
+    y: 0,
+    radiusX: 1,
+    radiusY: 1,
+    rotation: 0,
+    isCluster: false,
+    eraAffiliations,
+    eraCapitalLevels: eraAffiliations.map(() => 0),
+    eraNames: eraAffiliations.map(() => `Test ${id}`),
+  };
+}
+
+describe('parseYearCell', () => {
+  it('splits the v3 pipe hierarchy into nation/district/region', () => {
+    const parsed = parseYearCell('LC|Tamar Pact|Tamar Domains');
+    expect(parsed.nation).toBe('LC');
+    expect(parsed.district).toBe('Tamar Pact');
+    expect(parsed.region).toBe('Tamar Domains');
   });
 
-  it('detects a 2-token capital-only affiliation (e.g. `AuC|National Capital`)', () => {
-    const result = parseV3CapitalAndRegion('AuC|National Capital');
-    expect(result.capitalLevel).toBe(1);
-    expect(result.region).toBe('');
+  it('splits the v1 comma hierarchy', () => {
+    const parsed = parseYearCell('FS,Crucis March,New Avalon');
+    expect(parsed.nation).toBe('FS');
+    expect(parsed.district).toBe('Crucis March');
+    expect(parsed.region).toBe('New Avalon');
   });
 
-  it('treats the first token of a 2-token capital affiliation as the faction, not the region', () => {
-    expect(parseV3CapitalAndRegion('AuC|National Capital').region).toBe('');
+  it('reads the parenthetical of A(<FACTION>) as the attribute', () => {
+    const parsed = parseYearCell('A(CFG)');
+    expect(parsed.nation).toBe('A');
+    expect(parsed.attribute).toBe('CFG');
   });
 
-  it('detects a 3-token capital affiliation (e.g. `FWL|Duchy of Tamarind|Region Capital`)', () => {
-    const result = parseV3CapitalAndRegion('FWL|Duchy of Tamarind|Region Capital');
-    expect(result.capitalLevel).toBe(3);
-    expect(result.region).toBe('Duchy of Tamarind');
+  it('keeps a disputed D(<SUB>) intact instead of splitting inside the parens', () => {
+    const parsed = parseYearCell('D(LC,DC)');
+    expect(parsed.nation).toBe('D');
+    expect(parsed.attribute).toBe('LC,DC');
   });
 
-  it('detects a 5-token affiliation with a trailing capital descriptor', () => {
-    const result = parseV3CapitalAndRegion('FCL|Donegal March|Alarion Operational Area|Region 1|District Capital');
-    expect(result.capitalLevel).toBe(3);
-    expect(result.region).toBe('Region 1');
+  it('keeps a pipe-separated disputed head token intact', () => {
+    const parsed = parseYearCell('D(DC|WB)|District');
+    expect(parsed.nation).toBe('D');
+    expect(parsed.attribute).toBe('DC|WB');
+    expect(parsed.district).toBe('District');
   });
 
-  it('maps major and minor capitals to the correct levels', () => {
-    expect(parseV3CapitalAndRegion('FS|Crucis March|New Avalon|Major Capital').capitalLevel).toBe(2);
-    expect(parseV3CapitalAndRegion('LC|Protectorate of Donegal|Bolan Province|Minor Capital').capitalLevel).toBe(3);
+  it('treats a plain token as the nation', () => {
+    expect(parseYearCell('U').nation).toBe('U');
+    expect(parseYearCell('CJF').nation).toBe('CJF');
   });
 
-  it('treats the trailing token as the region when it is not a capital descriptor', () => {
-    expect(parseV3CapitalAndRegion('LC|Protectorate of Donegal|Bolan Province').capitalLevel).toBe(0);
-    expect(parseV3CapitalAndRegion('LC|Protectorate of Donegal|Bolan Province').region).toBe('Bolan Province');
-    expect(parseV3CapitalAndRegion('AuC|Marik Commonwealth').capitalLevel).toBe(0);
-    expect(parseV3CapitalAndRegion('AuC|Marik Commonwealth').region).toBe('Marik Commonwealth');
-  });
-
-  it('returns level 0 and empty region for unknown or empty affiliations', () => {
-    expect(parseV3CapitalAndRegion('')).toEqual({ capitalLevel: 0, region: '' });
-    expect(parseV3CapitalAndRegion('U')).toEqual({ capitalLevel: 0, region: '' });
-    expect(parseV3CapitalAndRegion('LC')).toEqual({ capitalLevel: 0, region: '' });
+  it('returns an empty result for empty input', () => {
+    expect(parseYearCell('')).toEqual({ nation: '', attribute: '', district: '', region: '', zone: '', capital: '' });
   });
 });
 
-describe('parseSystemsV3Csv eraAffiliations', () => {
-  const header = ['systemID', 'systemName', 'x', 'y', 'size', '2271', '3050a'];
-
-  it('parses systems with pipe-delimited v3 affiliations', () => {
-    const rows = [
-      header,
-      ['1', 'New Avalon', '0', '0', '1|1|0', 'U', 'FS|Crucis March|New Avalon|National Capital'],
-      ['2', 'Atreus', '1', '1', '1|1|0', 'U', 'AuC|National Capital'],
-      ['3', 'Tamarind', '2', '2', '1|1|0', 'U', 'FWL|Duchy of Tamarind|Region Capital'],
-    ];
-
-    const systems = parseSystemsV3Csv(rows as Array<Array<string>>, eras);
-
-    expect(systems).toHaveLength(3);
-    // eraAffiliations are preserved as-is
-    expect(systems[0].eraAffiliations).toEqual(['U', 'FS|Crucis March|New Avalon|National Capital']);
-    expect(systems[1].eraAffiliations).toEqual(['U', 'AuC|National Capital']);
-    expect(systems[2].eraAffiliations).toEqual(['U', 'FWL|Duchy of Tamarind|Region Capital']);
+describe('borderSeedingAffiliation', () => {
+  it('unwraps A(<FACTION>) while preserving the hierarchy tail', () => {
+    expect(borderSeedingAffiliation('A(CFG)|District')).toBe('CFG|District');
+    expect(borderSeedingAffiliation('A(CFG),District')).toBe('CFG,District');
+    expect(borderSeedingAffiliation('A(CFG)')).toBe('CFG');
   });
 
-  it('defaults to unaffiliated for missing era columns', () => {
-    const rows = [
-      header,
-      ['2', 'Nowhere', '1', '1', '1|1|0', 'U', 'U'],
+  it('leaves bare A and the hidden marker A(H) as written', () => {
+    expect(borderSeedingAffiliation('A')).toBe('A');
+    expect(borderSeedingAffiliation('A(H)')).toBe('A(H)');
+  });
+
+  it('leaves non-abandoned cells untouched, including their tails', () => {
+    expect(borderSeedingAffiliation('CJF|Tamar Pact|Tamar Domains')).toBe('CJF|Tamar Pact|Tamar Domains');
+    expect(borderSeedingAffiliation('FS,Crucis March,New Avalon')).toBe('FS,Crucis March,New Avalon');
+    expect(borderSeedingAffiliation('D(CJF/LC)')).toBe('D(CJF/LC)');
+    expect(borderSeedingAffiliation('U')).toBe('U');
+  });
+});
+
+describe('parseSystemsV3Csv (stage 2 enrichment)', () => {
+  beforeEach(() => clearPairingCache());
+  afterEach(() => clearPairingCache());
+
+  it('records the border-seeding affiliation per system x era, tail intact', () => {
+    const systems = [makeSystem('sys-1', ['A(CFG)|District', 'CJF|Tamar Pact|Tamar Domains'])];
+
+    parseSystemsV3Csv(systems, eras);
+
+    expect(getCacheEntryBorderID('sys-1_0')).toBe('CFG|District');
+    expect(getCacheEntryBorderID('sys-1_1')).toBe('CJF|Tamar Pact|Tamar Domains');
+  });
+
+  it('records the bare nation token and the parenthetical attribute', () => {
+    const systems = [makeSystem('sys-2', ['A(CFG)|District', 'U'])];
+
+    parseSystemsV3Csv(systems, eras);
+
+    expect(getCacheEntryNation('sys-2_0')).toBe('A');
+    expect(getCacheEntryAttribute('sys-2_0')).toBe('CFG');
+    expect(getCacheEntryNation('sys-2_1')).toBe('U');
+    expect(getCacheEntryAttribute('sys-2_1')).toBe('');
+  });
+
+  it('keeps A and U visible when no visibility override is configured', () => {
+    const systems = [makeSystem('sys-3', ['A', 'U'])];
+
+    parseSystemsV3Csv(systems, eras);
+
+    expect(getCacheEntryVisible('sys-3_0')).toBe(true);
+    expect(getCacheEntryVisible('sys-3_1')).toBe(true);
+  });
+
+  it('resolves faction colors through the registry and defaults to black', () => {
+    const faction: Faction = { id: 'CJF', name: 'Clan Jade Falcon', color: '#00FF00' };
+    const registry = new FactionRegistry();
+    registry.register(faction);
+    const systems = [makeSystem('sys-4', ['CJF', 'XX'])];
+
+    parseSystemsV3Csv(systems, eras, { factionRegistry: registry });
+
+    expect(getCacheEntryFactionColor('sys-4_0')).toBe('#00FF00');
+    expect(getCacheEntryFactionColor('sys-4_1')).toBe('#000000');
+  });
+
+  it('enriches every era of every system and returns the systems for chaining', () => {
+    const systems = [
+      makeSystem('sys-5', ['U', 'FS']),
+      makeSystem('sys-6', ['DC', 'LC']),
     ];
 
-    const systems = parseSystemsV3Csv(rows as Array<Array<string>>, eras);
+    const result = parseSystemsV3Csv(systems, eras);
 
-    expect(systems[0].eraAffiliations).toEqual(['U', 'U']);
+    expect(result).toBe(systems);
+    expect(getCacheEntryBorderID('sys-5_0')).toBe('U');
+    expect(getCacheEntryBorderID('sys-5_1')).toBe('FS');
+    expect(getCacheEntryBorderID('sys-6_0')).toBe('DC');
+    expect(getCacheEntryBorderID('sys-6_1')).toBe('LC');
   });
 });

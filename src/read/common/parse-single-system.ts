@@ -1,4 +1,5 @@
 import { Era, System } from '../../common';
+import { CAPITAL_LEVELS } from '../../common/capital-levels';
 import { traceFaction } from '../../common/utils/faction-traversal-logger';
 
 const FILE_NAME = 'parse-single-system.ts';
@@ -76,26 +77,21 @@ export function parseSingleSystem(id: string, row: SystemRow, eras: Array<Era>):
     traceFaction(
       FILE_NAME,
       `ERA ${eraIndex} RAW AFFILIATION`,
-      `year=${era.year} value="${affiliation}"`
+      `year=${era.year} value="${affiliation}"`,
+      eraIndex
     );
 
     eraAffiliations.push(affiliation);
 
     // --- Capital detection ---
-    if (affiliation.match(/faction capital/gi)) {
-      eraCapitalLevels.push(1);
-    } else if (affiliation.match(/major capital/gi)) {
-      eraCapitalLevels.push(2);
-    } else if (affiliation.match(/minor capital/gi)) {
-      eraCapitalLevels.push(3);
-    } else {
-      eraCapitalLevels.push(0);
-    }
+    const lastToken = affiliation.split(/[,|]/).pop()?.trim().toLowerCase() ?? '';
+    eraCapitalLevels.push(CAPITAL_LEVELS[lastToken] ?? 0);
 
     traceFaction(
       FILE_NAME,
       `ERA ${eraIndex} CAPITAL LEVEL`,
-      `value=${eraCapitalLevels[eraCapitalLevels.length - 1]}`
+      `value=${eraCapitalLevels[eraCapitalLevels.length - 1]}`,
+      eraIndex
     );
 
     // --- Name resolution ---
@@ -109,7 +105,8 @@ export function parseSingleSystem(id: string, row: SystemRow, eras: Array<Era>):
         traceFaction(
           FILE_NAME,
           `ERA ${eraIndex} NAME OVERRIDE`,
-          `year=${rename.year} name="${rename.name}"`
+          `year=${rename.year} name="${rename.name}"`,
+          eraIndex
         );
       }
     });
@@ -117,7 +114,8 @@ export function parseSingleSystem(id: string, row: SystemRow, eras: Array<Era>):
     traceFaction(
       FILE_NAME,
       `ERA ${eraIndex} FINAL NAME`,
-      eraNames[eraNames.length - 1]
+      eraNames[eraNames.length - 1],
+      eraIndex
     );
   });
 /**

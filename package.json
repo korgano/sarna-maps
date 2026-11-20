@@ -21,7 +21,9 @@
     "build": "tsc",
     "start": "ts-node src/main.ts",
     "test": "vitest",
+    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
     "lint": "eslint --ext .ts .",
+    "lint:config": "ts-node scripts/config-lint.ts",
     "build:validation-interfaces": "rm -f src/common/types/validatable/*-ti.ts & ts-interface-builder src/common/types/validatable/*.ts"
   },
   "dependencies": {

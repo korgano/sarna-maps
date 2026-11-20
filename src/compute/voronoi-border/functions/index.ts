@@ -1,4 +1,5 @@
 export * from './calculate-section-length';
+export * from './clip-section-to-loop';
 export * from './connect-internal-border-sections';
 export * from './connect-salients';
 export * from './ensure-edge-loop-clockwise-order';
@@ -11,3 +12,4 @@ export * from './merge-border-sections';
 export * from './separate-border-loops';
 export * from './simplify-border-sections';
 export * from './utils';
+export * from './validate-system-containment';

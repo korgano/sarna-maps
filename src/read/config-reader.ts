@@ -22,11 +22,16 @@ export async function readConfigFiles(fileNames: {
   systemLabelConfig: string;
   borderLabelConfig: string;
 }) {
-  // read and validate generator config
   const generatorConfig = readAndParseYamlFile(
     fileNames.generatorConfig,
     'Generator config',
-  );
+  ) as Record<string, any>;
+
+  if (!generatorConfig) {
+    logger.error('config-reader.ts', `Failed to read generator config at ${fileNames.generatorConfig}. Check YAML indentation and file existence.`);
+    process.exit(1);
+  }
+
   const checkers = createCheckers(
     GeneratorConfigTi,
     GeneratorConfigMapLayerTi,
@@ -34,7 +39,6 @@ export async function readConfigFiles(fileNames: {
   );
   try {
     checkers.GeneratorConfig.check(generatorConfig);
-    // TODO check filename pattern for output
   } catch (e) {
     logger.error(
       'config-reader.ts',
@@ -49,17 +53,16 @@ export async function readConfigFiles(fileNames: {
   }
   logger.info(`Generator config at ${fileNames.generatorConfig} read and parsed successfully`);
 
-
-  // TODO use zod or a similar library to make sure the configuration files are valid
-  // src/read/config-reader.ts
-
-  // --- EXISTING: read user data source config ---
   const dataSourceConfig = readAndParseYamlFile(
     fileNames.dataSourceConfig,
     'data source config'
-  ) as DataSourceConfig;
+  ) as unknown as DataSourceConfig;
 
-  // --- NEW: load global fallback ---
+  if (!dataSourceConfig) {
+    logger.error('config-reader.ts', `Failed to read data source config at ${fileNames.dataSourceConfig}`);
+    process.exit(1);
+  }
+
   const globalDataSourceConfigPath = path.resolve(
     process.cwd(),
     'config/global/data-source.config.yaml'
@@ -68,7 +71,12 @@ export async function readConfigFiles(fileNames: {
   const globalDataSourceConfig = readAndParseYamlFile(
     globalDataSourceConfigPath,
     'global data source config'
-  ) as DataSourceConfig;
+  ) as unknown as DataSourceConfig;
+
+  if (!globalDataSourceConfig) {
+    logger.error('config-reader.ts', `Failed to read global data source config at ${globalDataSourceConfigPath}`);
+    process.exit(1);
+  }
 
   function isValidLocalFileConfig(config: any): boolean {
   return (
@@ -79,26 +87,20 @@ export async function readConfigFiles(fileNames: {
   );
   }
 
-  //logger.debug('dataSourceConfig.localFileConfig:', dataSourceConfig.localFileConfig);
-  //logger.debug('generatorConfig.localFileConfig:', generatorConfig?.localFileConfig);
-  //logger.debug('globalDataSourceConfig.localFileConfig:', globalDataSourceConfig.localFileConfig);
-  //const dataSourceHasLocal = isValidLocalFileConfig(dataSourceConfig.localFileConfig);
   const generatorHasLocal = isValidLocalFileConfig(generatorConfig?.localFileConfig);
   const globalHasLocal = isValidLocalFileConfig(globalDataSourceConfig.localFileConfig);
 
-  //if (!dataSourceHasLocal) {
-    if (generatorHasLocal) {
-      dataSourceConfig.localFileConfig = generatorConfig.localFileConfig;
-      logger.info(`Using localFileConfig from generatorConfig`);
-    } else if (globalHasLocal) {
-      dataSourceConfig.localFileConfig = globalDataSourceConfig.localFileConfig;
-      logger.info('Using fallback localFileConfig from global data-source.config.yaml');
-    } else {
-      throw new Error(
-        'localFileConfig not found in dataSourceConfig, generatorConfig, or global config'
-      );
-    }
-  //}
+  if (generatorHasLocal) {
+    dataSourceConfig.localFileConfig = generatorConfig.localFileConfig;
+    logger.info(`Using localFileConfig from generatorConfig`);
+  } else if (globalHasLocal) {
+    dataSourceConfig.localFileConfig = globalDataSourceConfig.localFileConfig;
+    logger.info('Using fallback localFileConfig from global data-source.config.yaml');
+  } else {
+    throw new Error(
+      'localFileConfig not found in dataSourceConfig, generatorConfig, or global config'
+    );
+  }
 
   const glyphConfig = readAndParseYamlFile(
     fileNames.glyphConfig,
@@ -127,7 +129,6 @@ export async function readConfigFiles(fileNames: {
   if (!borderLabelConfig) {
     throw new Error('Border label configuration missing or incomplete');
   }
-  // TODO validate properly
   borderLabelConfig.rules = {
     ...{
       labelDistanceToBorder: 1,

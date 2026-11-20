@@ -1,5 +1,6 @@
 import { BorderSection, BorderDelaunayVertex } from '../../types';
-import { updateEdgeValues } from '../utils';
+import { freshNodeId, updateEdgeValues } from '../utils';
+import { isDisputedZoneEdge } from '../../../../common/utils/disputed-affiliation';
 import { EMPTY_FACTION, INDEPENDENT } from '../../../constants';
 
 /**
@@ -22,6 +23,11 @@ export function pruneShortEdges(
   for (let i = 0; i < section.edges.length; i++) {
     const length = section.edges[i].length;
     const lengthFactor = 0.2;
+    // Skip edges that are part of a disputed zone boundary
+    if (isDisputedZoneEdge(section.edges[i])) {
+      continue;
+    }
+
     if (length > threshold || section.edges.length < 2) {
       continue;
     }
@@ -46,8 +52,11 @@ export function pruneShortEdges(
       // Math.min(section.edges[i - 1].closeness, section.edges[i + 1].closeness) > lengthFactor &&
       Math.max(numOfBorderAffiliations1, numOfBorderAffiliations2) <= 2
     ) {
-      // before removing the edge, create a new connecting node at the edge's midpoint
+      // before removing the edge, create a new connecting node at the edge's midpoint.
+      // The node gets a FRESH id: reusing node1's id would alias two physical
+      // points under one identity and corrupt endpoint matching downstream.
       const newNode = {...section.edges[i].node1};
+      newNode.id = freshNodeId(section.edges[i].node1.id);
       newNode.x = 0.5 * (section.edges[i].node1.x + section.edges[i].node2.x);
       newNode.y = 0.5 * (section.edges[i].node1.y + section.edges[i].node2.y);
       newNode.borderAffiliations = {
@@ -128,3 +137,5 @@ export function pruneShortEdges(
   }
   return numberOfEdgesRemoved;
 }
+
+

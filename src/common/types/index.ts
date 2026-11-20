@@ -10,6 +10,7 @@ export * from './connection-line';
 export * from './data-source-config';
 export * from './era';
 export * from './faction';
+export * from './faction-registry';
 export * from './glyph-config';
 export * from './glyph-settings';
 export * from './identifiable-rectangle';

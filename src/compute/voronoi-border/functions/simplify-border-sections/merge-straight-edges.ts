@@ -1,6 +1,7 @@
 import { BorderSection, BorderDelaunayVertex } from '../../types';
 import { distance, distancePointToLine, lineFromPoints } from '../../../../common';
-import { updateEdgeValues } from '../utils';
+import { isDisputedZoneEdge } from '../../../../common/utils/disputed-affiliation';
+import { replaceEdgeId, updateEdgeValues } from '../utils';
 
 /**
  * Simplifies a border section by merging neighboring edges if they form a straight (or almost straight) line.
@@ -37,8 +38,9 @@ export function mergeStraightEdges(
     const dist = distancePointToLine(node2, lineFromPoints(node1, node3));
     const length = distance(node1, node3);
     if (length > 500 || Object.keys(node2.borderAffiliations).length > 2) {
-      // filter(
-      // (aff) => ![EMPTY_FACTION].includes(aff)).length > 2) {
+      continue;
+    }
+    if (isDisputedZoneEdge(section.edges[i]) || isDisputedZoneEdge(section.edges[i + 1])) {
       continue;
     }
     if (
@@ -46,13 +48,17 @@ export function mergeStraightEdges(
       Math.min(closenessRelation1, closenessRelation2) > minClosenessRelation &&
       (dist < alwaysMergeDistance || dist / length < maxDistanceFactor)
     ) {
+      const removedId = section.edges[i + 1].id;
+      const keptId = section.edges[i].id;
       section.edges[i].node2 = section.edges[i + 1].node2;
       const node2Id = section.edges[i].node2.id;
       // modify three way nodes list
       if (threeWayNodes[node2Id]) {
-        threeWayNodes[node2Id] = threeWayNodes[node2Id].filter((edgeId) => edgeId !== section.edges[i + 1].id);
-        threeWayNodes[node2Id].push(section.edges[i].id);
+        threeWayNodes[node2Id] = threeWayNodes[node2Id].filter((edgeId) => edgeId !== removedId);
+        threeWayNodes[node2Id].push(keptId);
       }
+      // the removed id may linger under other node keys — sweep globally.
+      replaceEdgeId(threeWayNodes, removedId, keptId);
       updateEdgeValues(section.edges[i], vertices);
       section.edges.splice(i + 1, 1);
       i--;
@@ -61,3 +67,5 @@ export function mergeStraightEdges(
   }
   return numberOfRemovedEdges;
 }
+
+

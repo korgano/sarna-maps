@@ -1,5 +1,9 @@
 # Faction Traversal Logger Configuration
 # Controls tracing behavior for faction affiliation resolution
+# Comprehensive fix: previously enabled:true + pattern:"" + logFrequency:all
+# caused canonicalAffiliation hot path (Voronoi/Poisson) to emit 189k
+# synchronous traces per run (90% "(undefined):FACTION" noise). Default
+# is now *disabled*; enable explicitly with a narrow pattern for debugging.
 
 enabled: true
 
@@ -14,15 +18,25 @@ logFrequency: 'all'
 # Leave empty to log ALL faction values (recommended for debugging)
 # Set to 'FWL' or other pattern to filter specific factions
 # Set to 'D-' to log only disputed system faction traces
-pattern: 'D-'
+pattern: #'D-'
 
 # List of files to exclude from tracing
 # Use the file identifier as used in traceFaction() calls (e.g., 'parse-factions.ts')
 excludeFiles:
-  # - 'xlsx-reader.ts'
+  - 'xlsx-reader.ts'
   # - 'parse-single-system.ts'
   # - 'retain-faction-affiliation-pairing.ts'
   # - 'extract-border-state-affiliation.ts'
   # - 'place-border-labels.ts'
   # - 'render-border-loops.ts'
   # - 'render-systems.ts'
+
+# Era indices to limit tracing to.
+# When set to a non-empty list (e.g., [30]), only era-specific traces whose
+# eraIndex is in this list are written to faction-traversal-log.txt.
+# Non-era-specific traces (faction parsing, CSV detection, etc.) are always
+# written regardless of this filter.
+# Leave as null or empty to trace all eras.
+eras: null
+# eras: [30]
+# eras: [16, 30]

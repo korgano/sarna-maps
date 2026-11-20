@@ -1,3 +1,3 @@
-export * from './write-svg-map';
+export * from './write-svg-maps';
 export * from './functions';
 export * from './types';

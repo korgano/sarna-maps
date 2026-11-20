@@ -2,19 +2,20 @@ import path from 'path';
 import {
   BorderLabelConfig,
   Dimensions2d,
-  Era, Faction,
-  GeneratorConfigMapLayer,
+  Era, FactionRegistry,
+  GeneratorConfigMapLayerFixedSize,
   GlyphConfig, logger,
   Point2d, RectangleGrid,
   System,
   SystemLabelConfig, TextTemplate
 } from '../../../common';
-import { FactionAffiliationPair } from '../../../read/common/retain-faction-affiliation-pairing';
+import { FactionAffiliationPair, getCacheEntryBorderID } from '../../../read/common/retain-faction-affiliation-pairing';
+import { normalizeFactionKey } from '../../../common/utils/normalize-faction-key';
 import { restrictSystemsToViewbox } from '../../../compute/restrict-objects-to-viewbox';
 import {
   BorderEdgeLoop,
   placeBorderLabels,
-  placeRegionLabels,
+  // placeRegionLabels,
   placeSystemLabels,
   VoronoiResult,
   VoronoiResultHierarchyLevel
@@ -23,6 +24,7 @@ import {
   restrictBorderLoopsToViewbox
 } from '../../../compute/restrict-objects-to-viewbox/functions/restrict-border-loops-to-viewbox';
 import { renderBorderLoops } from './render-border-loops';
+import { renderNeutralBoundaries } from './render-neutral-boundaries';
 import { renderSystems } from './render-systems';
 import { renderSystemLabels } from './render-system-labels';
 import { renderBorderLabels } from './render-border-labels';
@@ -32,6 +34,8 @@ import { generateConnectionLines } from '../../../compute/connection-lines';
 import { renderConnectionLines } from './render-connection-lines';
 import { renderSalients } from './render-salients';
 import { renderRegionalBorders } from './render-regional-borders';
+import { extractBorderStateAffiliation, getAbandonedBorderFaction, isAbandonedAffiliation } from '../../../common';
+import { EMPTY_FACTION, INDEPENDENT } from '../../../compute/constants';
 
 /**
  * Render a single configured map section
@@ -51,14 +55,14 @@ import { renderRegionalBorders } from './render-regional-borders';
 export function renderMapLayer(
   theme: 'light' | 'dark',
   imageDimensions: Dimensions2d,
-  mapLayerConfig: GeneratorConfigMapLayer,
+  mapLayerConfig: GeneratorConfigMapLayerFixedSize,
   globalConfigs: {
     glyphConfig: GlyphConfig;
     systemLabelConfig: SystemLabelConfig;
     borderLabelConfig: BorderLabelConfig;
   },
   era: Era,
-  factionMap: Record<string, Faction>,
+  factionRegistry: FactionRegistry,
   pairs: Map<string, FactionAffiliationPair>,
   affiliationLevelSections: Array<VoronoiResultHierarchyLevel>,
   systems: Array<System>,
@@ -108,7 +112,6 @@ export function renderMapLayer(
         labelGrid,
         globalConfigs.glyphConfig,
         globalConfigs.systemLabelConfig,
-        factionMap,
       )
     : [];
 
@@ -128,27 +131,34 @@ export function renderMapLayer(
     )
     : [];
 
-  // Limit border loops to the visible section of the map
+  // Limit border loops to the visible section of the map.
+  //
+  // UNIFIED CONSTRAINT: `fillLoops` (pre-separation gapless geometry) is the
+  // canonical source for BOTH Pass 1 clip paths (renderNeutralBoundaries) and
+  // Pass 2 fills/strokes (renderBorderLoops). Using the same restricted result
+  // for both prevents clip path ↔ geometry divergence that could cause
+  // hairline gaps or bleed at viewbox edges.
+  //
+  // `borderLoops` (separated/pulled geometry) is only used to determine which
+  // factions have borders; it is never used for fill or stroke rendering.
+  const boundedFillLoops = !!mapLayerConfig.elements.borders
+    ? affiliationLevelSections.map((levelSection) =>
+      restrictBorderLoopsToViewbox(levelSection.fillLoops || levelSection.borderLoops || {}, visibleViewRect, 15)
+    )
+    : [];
+
   const boundedBorderLoops = !!mapLayerConfig.elements.borders
     ? affiliationLevelSections.map((levelSection) =>
       restrictBorderLoopsToViewbox(levelSection.borderLoops || {}, visibleViewRect, 15)
     )
     : [];
-    //
-    // restrictBorderLoopsToViewbox(
-    //     affiliationLevelSections.length ? affiliationLevelSections[0].borderLoops || {} : {}, // TODO differentiate hierarchy levels
-    //     visibleViewRect,
-    //     15, // TODO put this in a config file
-    //   )
-    // : {};
 
   // Place border labels for faction level (level 0)
   const borderLabels = (mapLayerConfig.elements.borders?.length || 0) >= 1
     ? placeBorderLabels(
         visibleViewRect,
         era.index,
-        factionMap,
-        pairs,
+        factionRegistry,
         affiliationLevelSections.length ? affiliationLevelSections[0].borderLoops || {} : {},
         labelGrid,
         globalConfigs.glyphConfig,
@@ -156,55 +166,96 @@ export function renderMapLayer(
       )
     : { candidatesByFaction: {} };
 
-  // Place region border labels for hierarchy levels 1+ (only where borderLabels: true)
-  const regionLabelResults: Array<{ defs: string; css: string; markup: string }> = [];
-  mapLayerConfig.elements.borders?.forEach((bordersConfig, levelIndex) => {
-    if (levelIndex === 0) return;
-    if (bordersConfig.display !== 'regions') return;
-    if (!bordersConfig.borderLabels) return;
-    if (levelIndex >= affiliationLevelSections.length) return;
-
-    const levelLoops = affiliationLevelSections[levelIndex].borderLoops || {};
-    if (Object.keys(levelLoops).length === 0) return;
-
-    const result = placeRegionLabels(
-      levelLoops,
-      levelIndex,
-      factionMap,
-      labelGrid,
-      globalConfigs.glyphConfig,
-      visibleViewRect,
-      globalConfigs.systemLabelConfig,
-      globalConfigs.borderLabelConfig,
-      affiliationLevelSections.length > 0 ? affiliationLevelSections[0].borderLoops || {} : {},
-    );
-    if (result) {
-      regionLabelResults.push(result);
-    }
-  });
+  // Region border labels (hierarchy levels 1+) are not rendered yet; see the
+  // renderMapLayer TODO notes for the intended design.
 
   // PHASE 2: RENDER ELEMENTS
   const layerCssClass = mapLayerConfig.name.replace(/\s+/g, '-');
 
   // TODO enable for lower hierarchy levels, specifically figure out how to manage fill colors
+  let neutralDefs = '';
+  let neutralCss = '';
+  let neutralMarkup = '';
   let factionDefs = '';
   let factionCss = '';
   let factionMarkup = '';
+
+  // Compute systemsByFaction once — shared by renderNeutralBoundaries and renderBorderLoops.
+  //
+  // Uses the cached borderID from parse-systems-v3-csv (stage 2 enrichment) as the
+  // canonical faction key, so render and Voronoi compute agree on which faction
+  // each system belongs to. borderID is the A(<FACTION>)-unwrapped, level-1
+  // affiliation — exactly what calculateVoronoiBorders seeds the Voronoi with.
+  // Keys fold with trim().toUpperCase() to match groupBorderLoopsByUpperKey exactly;
+  // a mismatch here makes whole-faction loop lookups miss (e.g. AuC vs AUC).
+  //
+  // Falls back to extracting from the raw era cell if the enrichment cache is empty
+  // (e.g. when parseSystemsV3Csv was not run), preserving backward compatibility.
+  const systemsByFaction: Record<string, Array<System>> = {};
+  systems.forEach((system) => {
+    const cacheKey = `${system.id}_${era.index}`;
+    // borderID from parse-systems-v3-csv: A(<FACTION>) -> <FACTION>, bare A -> 'A',
+    // disputed D(LC,DC) -> 'D(LC,DC)' (raw form preserved; caller normalizes).
+    const borderID = getCacheEntryBorderID(cacheKey);
+    let affiliation: string;
+    if (borderID) {
+      // Use the cached borderID directly — it already reflects parse-systems-v3-csv
+      // parsing (A-unwrap, first-token extraction). Only the top-level faction key
+      // is needed for systemsByFaction grouping, so take level 1.
+      affiliation = extractBorderStateAffiliation(borderID, ['', 'A', 'U'], 'ignore', 1);
+    } else {
+      // Fallback: normalize from the raw era cell (should not happen when the
+      // enrichment stage ran, but keeps behavior safe if it didn't).
+      const rawAffiliation = system.eraAffiliations[era.index] || '';
+      const normalizedAffiliation = normalizeFactionKey(rawAffiliation);
+      affiliation = isAbandonedAffiliation(normalizedAffiliation)
+        ? getAbandonedBorderFaction(normalizedAffiliation)
+        : extractBorderStateAffiliation(normalizedAffiliation, ['', 'A', 'U'], 'ignore', 1);
+    }
+    if (!affiliation || affiliation === EMPTY_FACTION || affiliation === INDEPENDENT) {
+      return;
+    }
+    // Trim + upper-case to match groupBorderLoopsByUpperKey exactly.
+    const key = affiliation.trim().toUpperCase();
+    if (!systemsByFaction[key]) {
+      systemsByFaction[key] = [];
+    }
+    systemsByFaction[key].push(system);
+  });
+
   mapLayerConfig.elements.borders?.forEach((bordersConfig, levelIndex) => {
     if (bordersConfig.display === 'factions') {
       if (boundedBorderLoops.length < levelIndex + 1) {
         logger.warn('render-map-layer.ts', `Cannot generate output for map layer "${mapLayerConfig.name}": No bounded border loops for level ${levelIndex}`);
         return;
       }
+      // Pass 1: Neutral boundary layer (gapless fill geometry for clips).
+      const neutralResult = renderNeutralBoundaries(
+        boundedFillLoops[levelIndex] || boundedBorderLoops[levelIndex],
+        theme,
+        layerCssClass,
+        systemsByFaction,
+      );
+      const clipPathIds = neutralResult.clipPathIds;
+      neutralDefs += neutralResult.defs + '\n';
+      neutralCss += neutralResult.css + '\n';
+      neutralMarkup += neutralResult.markup + '\n';
+      // Pass 2: Faction borders and fills (colored, clipped to neutral boundaries).
+      // Fills use the PRE-PULL (gapless) fillLoops so adjacent faction territories
+      // touch without gaps. Strokes use the SAME fillLoops geometry so they align
+      // perfectly with region borders — every external border has a corresponding
+      // stroke that runs flush with adjacent borders. Strokes are trimmed against
+      // foreign fills (fills win) only where they genuinely overlap foreign territory.
       const { defs, css, markup } = renderBorderLoops(
         boundedBorderLoops[levelIndex],
-        factionMap,
+        boundedFillLoops[levelIndex],
+        factionRegistry,
         pairs,
         theme,
         bordersConfig.curveBorderEdges,
         layerCssClass,
-        systems,
-        era.index,
+        systemsByFaction,
+        clipPathIds,
       );
       factionDefs += defs + '\n';
       factionCss += css + '\n';
@@ -214,8 +265,7 @@ export function renderMapLayer(
         // affiliationLevelSections[levelIndex].borderSections,
         levelIndex,
         boundedInternalBorders[levelIndex],
-        factionMap,
-        pairs,
+        factionRegistry,
         theme,
         bordersConfig.curveBorderEdges,
       );
@@ -223,26 +273,14 @@ export function renderMapLayer(
       factionMarkup += markup + '\n';
     }
   });
-  // const { defs: factionDefs, css: factionCss, markup: factionMarkup } =
-  //   mapLayerConfig.elements.borders?.length && mapLayerConfig.elements.borders[0].display
-  //     ? renderBorderLoops(boundedBorderLoops, factionMap, theme, mapLayerConfig.elements.borders[0].curveBorderEdges, layerCssClass)
-  //     : { defs: '', css: '', markup: '' };
-
   // Render faction border labels (level 0)
   const { defs: borderLabelDefs, css: borderLabelCss, markup: borderLabelMarkup } =
     mapLayerConfig.elements.borders?.length && mapLayerConfig.elements.borders[0].borderLabels
-      ? renderBorderLabels(borderLabels, factionMap, pairs, theme, layerCssClass, zoomFactor)
+      ? renderBorderLabels(borderLabels, factionRegistry, theme, layerCssClass, zoomFactor)
       : { defs: '', css: '', markup: '' };
 
-  // Render region border labels (levels 1+)
-  let regionBorderLabelDefs = '';
-  let regionBorderLabelCss = '';
-  let regionBorderLabelMarkup = '';
-  for (const rl of regionLabelResults) {
-    regionBorderLabelDefs += rl.defs + '\n';
-    regionBorderLabelCss += rl.css + '\n';
-    regionBorderLabelMarkup += rl.markup + '\n';
-  }
+  // Region border labels (levels 1+) are not rendered yet; see the commented
+  // placeRegionLabels call site in this file for the intended design.
 
   const { defs: jumpRingDefs, css: jumpRingCss, markup: jumpRingMarkup } = mapLayerConfig.elements.jumpRings
     ? renderJumpRings(mapLayerConfig, focusPoint, theme, layerCssClass)
@@ -254,7 +292,7 @@ export function renderMapLayer(
       : { defs: '', css: '', markup: '' };
 
   const { defs: systemDefs, css: systemCss, markup: systemMarkup } = mapLayerConfig.elements.systems
-    ? renderSystems(visibleSystems, factionMap, pairs, theme, era.index, layerCssClass)
+    ? renderSystems(visibleSystems, factionRegistry, theme, era.index, layerCssClass)
     : { defs: '', css: '', markup: '' };
 
   const { css: systemLabelCss, markup: systemLabelMarkup } = mapLayerConfig.elements.systemLabels
@@ -281,11 +319,6 @@ export function renderMapLayer(
       );
     const regionalBorderSectionsCss = '';
     const regionalBorderSectionsMarkup = '';
-    // const { css: regionalBorderSectionsCss, markup: regionalBorderSectionsMarkup } =
-    //   renderBorderSections(
-    //     debugObjects.regionalBorderSections || [],
-    //     theme,
-    //   );
     debugCss = [salientsCss, regionalBorderSectionsCss].join('\n');
     debugMarkup = [salientsMarkup, regionalBorderSectionsMarkup].join('\n');
   }
@@ -307,9 +340,10 @@ export function renderMapLayer(
   });
 
   const markup = [
+    neutralMarkup,
     factionMarkup,
     borderLabelMarkup,
-    regionBorderLabelMarkup,
+    // regionBorderLabelMarkup,
     jumpRingMarkup,
     connectionLineMarkup,
     systemMarkup,
@@ -320,24 +354,36 @@ export function renderMapLayer(
     .filter((code) => !!code.trim())
     .join('\n');
   if (markup) {
+    const allDefs = [mapSectionDef, neutralDefs, factionDefs, borderLabelDefs, /*regionBorderLabelDefs,*/ jumpRingDefs, systemDefs, debugDefs]
+      .filter((code) => !!code.trim())
+      .join('\n');
+    const allCss = [
+      mapSectionCss,
+      neutralCss,
+      factionCss,
+      borderLabelCss,
+      /*regionBorderLabelCss,*/
+      jumpRingCss,
+      systemCss,
+      connectionLineCss,
+      systemLabelCss,
+      directionalIndicatorsCss,
+      debugCss,
+    ]
+      .filter((code) => !!code.trim())
+      .join('\n');
+
+    // Validate that every clip-path / url(#...) reference has a matching <defs> element.
+    // Catches missing clip paths that would let fills/strokes bleed into neighboring factions.
+    assertFillDefsPresent(allDefs, allCss, 'render-map-layer.ts');
+
+    // Validate CSS doesn't contain characters that break strict renderers (e.g. Inkscape).
+    // Catches newlines within property values that cause factions to render black.
+    assertCssClean(allCss, 'render-map-layer.ts');
+
     return {
-      defs: [mapSectionDef, factionDefs, borderLabelDefs, regionBorderLabelDefs, jumpRingDefs, systemDefs, debugDefs]
-        .filter((code) => !!code.trim())
-        .join('\n'),
-      css: [
-        mapSectionCss,
-        factionCss,
-        borderLabelCss,
-        regionBorderLabelCss,
-        jumpRingCss,
-        systemCss,
-        connectionLineCss,
-        systemLabelCss,
-        directionalIndicatorsCss,
-        debugCss,
-      ]
-        .filter((code) => !!code.trim())
-        .join('\n'),
+      defs: allDefs,
+      css: allCss,
       markup: layerTemplate.replace({
         name: mapLayerConfig.name,
         css_class: layerCssClass,
@@ -380,5 +426,43 @@ export function assertFillDefsPresent(defs: string, css: string, sourceFile: str
         `Missing fill def: CSS references url(#${refId}) but no matching element found in <defs>.`
       );
     }
+  }
+}
+
+/**
+ * Guard: verify that generated CSS contains no characters that could break
+ * strict CSS parsers (e.g. Inkscape). Newlines within property values,
+ * carriage returns, and other control characters can cause renderers to
+ * reject the entire CSS rule, resulting in factions appearing with default
+ * colors (black).
+ *
+ * @param css The generated CSS string to validate
+ * @param sourceFile The source file calling this guard, for error logging
+ */
+export function assertCssClean(css: string, sourceFile: string): void {
+  const lines = css.split('\n');
+  let hasIssues = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Check for carriage returns
+    if (line.includes('\r')) {
+      logger.error(sourceFile, `CSS line ${i + 1} contains carriage return character`);
+      hasIssues = true;
+    }
+    // Check for lines that start with whitespace followed by a property
+    // (indicates a property value was split across lines)
+    if (/^\s+(stroke|fill|stroke-width|fill-opacity|stroke-opacity):/.test(line)) {
+      logger.error(
+        sourceFile,
+        `CSS line ${i + 1} appears to be a continuation of a property value from the previous line (possible newline within CSS rule)`
+      );
+      hasIssues = true;
+    }
+  }
+  if (hasIssues) {
+    logger.error(
+      sourceFile,
+      'CSS contains characters that may break strict renderers (e.g. Inkscape). Factions may render with default colors.'
+    );
   }
 }

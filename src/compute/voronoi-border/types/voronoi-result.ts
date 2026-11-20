@@ -28,8 +28,17 @@ export interface VoronoiResultHierarchyLevel {
    */
   internalBorderSections?: Array<BorderSection>;
   /**
-   * Map of border loops for this hierarchy level, by faction key
+   * Map of border loops for this hierarchy level, by faction key.
+   * These carry the SEPARATED (pulled) geometry used for border STROKES:
+   * each faction's copy sits on its own parallel line.
    */
   borderLoops?: Record<string, Array<BorderSection>>;
+  /**
+   * Gapless territory snapshot for FILLS, by faction key: deep-copied from
+   * borderLoops BEFORE separation, so adjacent fills meet at shared
+   * centerlines with no background slivers. Strokes must never use these
+   * (shared borders would coincide into single-color overdraw).
+   */
+  fillLoops?: Record<string, Array<BorderSection>>;
   threeWayNodes: Record<string, Array<string>>;
 }

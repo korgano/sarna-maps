@@ -32,6 +32,10 @@ export interface FactionTraversalConfig {
   logFrequency: LogFrequency;
   pattern: string;
   excludeFiles: string[];
+  /** Era indices to trace. When set and non-empty, only era-specific traces
+   *  whose eraIndex is in this list are logged. Non-era-specific traces are
+   *  always logged regardless of this filter. */
+  eras: Array<number> | null;
 }
 
 /**
@@ -43,6 +47,7 @@ const DEFAULT_CONFIG: FactionTraversalConfig = {
   logFrequency: 'all',
   pattern: '',
   excludeFiles: [],
+  eras: null,
 };
 
 /**
@@ -73,6 +78,7 @@ function loadConfig(): void {
         logFrequency: parsed.logFrequency ?? DEFAULT_CONFIG.logFrequency,
         pattern: parsed.pattern ?? DEFAULT_CONFIG.pattern,
         excludeFiles: parsed.excludeFiles ?? DEFAULT_CONFIG.excludeFiles,
+        eras: parsed.eras ?? DEFAULT_CONFIG.eras,
       };
 
       logger.info('faction-traversal-logger.ts', `Loaded config from ${CONFIG_PATH}`);
@@ -94,6 +100,21 @@ function loadConfig(): void {
 export function getFactionTracingConfig(): FactionTraversalConfig {
   loadConfig();
   return { ..._config };
+}
+
+/**
+ * Set the active era indices for era-filtered tracing.
+ * Called by the pipeline with the eras from the active generator config.
+ * When eras is set and non-empty, only era-specific traces whose eraIndex
+ * is in this list are written to the faction-traversal-log.
+ */
+export function setActiveEras(eras: Array<number>): void {
+  loadConfig();
+  _config.eras = eras.slice();
+  logger.info(
+    'faction-traversal-logger.ts',
+    `Active eras set for faction tracing: [${eras.join(', ')}]`,
+  );
 }
 
 /**
@@ -140,11 +161,20 @@ function isFileExcluded(fileName: string): boolean {
 /**
  * Main tracing function
  * Configuration is loaded from config/global/faction-traversal.config.yaml ONLY
+ *
+ * @param file The source file identifier (used for excludeFiles matching)
+ * @param stage The pipeline stage (e.g., 'ERA 0 RAW AFFILIATION')
+ * @param factionValue The faction value to trace
+ * @param eraIndex Optional era index. When active eras are configured via
+ *   setActiveEras() and eraIndex is provided, the trace is only written if
+ *   eraIndex is in the active eras list. Non-era-specific traces (no eraIndex)
+ *   are always written regardless of the era filter.
  */
 export function traceFaction(
   file: string,
   stage: string,
   factionValue: unknown,
+  eraIndex?: number,
 ): void {
   loadConfig();
 
@@ -154,6 +184,14 @@ export function traceFaction(
 
   if (isFileExcluded(file)) {
     return;
+  }
+
+  // Era filter: if eras are configured and eraIndex is provided, skip traces
+  // for eras not in the active list. Traces without eraIndex are always kept.
+  if (_config.eras && _config.eras.length > 0 && eraIndex !== undefined) {
+    if (!_config.eras.includes(eraIndex)) {
+      return;
+    }
   }
 
   if (typeof factionValue !== 'string') {

@@ -1,8 +1,8 @@
-{{PREFIX}}.system, .cluster { fill: #000; stroke: #000; stroke-width: .25; } /* default color */
+{{PREFIX}}.system { stroke: #000; stroke-width: .25; fill: #999999; } /* default color - fill set by faction rules */
 {{PREFIX}}.system-decoration { fill: none; stroke: #000; stroke-width: .25; }
 {{PREFIX}}.system.U, .cluster.U { stroke: #777; fill: #777; }
 {{PREFIX}}.system.I, .cluster.I { stroke: #555; }
 {{PREFIX}}.system.D, .cluster.D { fill: #c00; }
 {{PREFIX}}.system.hidden { stroke-dasharray: .4 .3; }
-{{PREFIX}}.cluster { fill-opacity: 0.25; }
+{{PREFIX}}.cluster { stroke: #000; stroke-width: .25; fill-opacity: 0.25; }
 {{FACTION_COLORS}}

@@ -3,6 +3,7 @@ import {
   BezierEdge2d,
   BorderLabelConfig,
   BorderLabelVariant,
+  buildEdgePathPrefixSum,
   distancePointToLine,
   Faction,
   lineFromPoints, logger,
@@ -61,13 +62,24 @@ export function generateLabelCandidates(
     p2c2: edge.n2c2,
   }));
 
+  // Precompute cumulative edge lengths for O(log n) binary search lookups
+  const edgePathPrefixSum = buildEdgePathPrefixSum(edgePath);
+
+  // Cap candidates per loop: if the loop would produce more than this many positions,
+  // widen the spacing to avoid excessive memory use during scoring
+  const MAX_POSITIONS_PER_LOOP = 200;
+  const effectiveSpacing = Math.max(
+    borderLabelConfig.rules.distanceBetweenCandidates,
+    loopLength / MAX_POSITIONS_PER_LOOP,
+  );
+
   // iterate over edge loop and create candidates in regular intervals
   for (
     let candidatePosition = 0;
     candidatePosition < loopLength;
-    candidatePosition += borderLabelConfig.rules.distanceBetweenCandidates
+    candidatePosition += effectiveSpacing
   ) {
-    const controlPointCenter = pointAlongEdgePath(edgePath, candidatePosition % loopLength);
+    const controlPointCenter = pointAlongEdgePath(edgePath, candidatePosition % loopLength, false, edgePathPrefixSum);
     if (controlPointCenter) {
       // find two more points, one on each side of the candidate center point
       const singleLineWidth = factionNameTokens[BorderLabelVariant.SingleLine]?.width || 1;
@@ -75,16 +87,16 @@ export function generateLabelCandidates(
       const abbrWidth = factionNameTokens[BorderLabelVariant.Abbreviation]?.width || 1;
       const controlPoints: Record<BorderLabelVariant, [Point2dWithEdgeContext | undefined, Point2dWithEdgeContext | undefined]> = {
         [BorderLabelVariant.SingleLine]: [
-          pointAlongEdgePath(edgePath, (candidatePosition - singleLineWidth * 0.5 + loopLength) % loopLength, true),
-          pointAlongEdgePath(edgePath, (candidatePosition + singleLineWidth * 0.5) % loopLength, true),
+          pointAlongEdgePath(edgePath, (candidatePosition - singleLineWidth * 0.5 + loopLength) % loopLength, true, edgePathPrefixSum),
+          pointAlongEdgePath(edgePath, (candidatePosition + singleLineWidth * 0.5) % loopLength, true, edgePathPrefixSum),
         ],
         [BorderLabelVariant.MultiLine]: [
-          pointAlongEdgePath(edgePath, (candidatePosition - multiLineWidth * 0.5 + loopLength) % loopLength, true),
-          pointAlongEdgePath(edgePath, (candidatePosition + multiLineWidth * 0.5) % loopLength, true),
+          pointAlongEdgePath(edgePath, (candidatePosition - multiLineWidth * 0.5 + loopLength) % loopLength, true, edgePathPrefixSum),
+          pointAlongEdgePath(edgePath, (candidatePosition + multiLineWidth * 0.5) % loopLength, true, edgePathPrefixSum),
         ],
         [BorderLabelVariant.Abbreviation]: [
-          pointAlongEdgePath(edgePath, (candidatePosition - abbrWidth * 0.5 + loopLength) % loopLength, true),
-          pointAlongEdgePath(edgePath, (candidatePosition + abbrWidth * 0.5) % loopLength, true),
+          pointAlongEdgePath(edgePath, (candidatePosition - abbrWidth * 0.5 + loopLength) % loopLength, true, edgePathPrefixSum),
+          pointAlongEdgePath(edgePath, (candidatePosition + abbrWidth * 0.5) % loopLength, true, edgePathPrefixSum),
         ]
       };
 
@@ -239,10 +251,6 @@ export function generateLabelCandidates(
             rect,
             tokens: factionNameTokens[labelVariant]?.tokens || [],
             labelBaselines,
-            // debugging properties
-            controlPoints: [controlPointLeft.point, controlPointRight.point],
-            perpEdge: [perpEdge.p1, perpEdge.p2],
-            pointIsInside: !centerPointIsOutside,
           });
         }
       });

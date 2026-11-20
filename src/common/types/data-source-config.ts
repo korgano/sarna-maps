@@ -23,7 +23,7 @@ export interface DataSourceConfig {
      */
     systemsFilename: string;
     /**
-     * The filename of the factions csv file
+     * The filename of the factions csv file (optional, auto-discovered if omitted)
      */
     factionsFilename?: string;
     /**
@@ -31,7 +31,7 @@ export interface DataSourceConfig {
      */
     descriptionFilename?: string;
     /**
-     * Specify the data source type
+     * Specify CSV as the data source type
      */
     dataSourceType?: 'csv';
   };
